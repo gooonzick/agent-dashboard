@@ -96,7 +96,7 @@ import Testing
     }
 
     @Test func failedLaunchesDoNotPileUpDescriptors() async {
-        // Each failed launch used to leave four descriptors open for a while, so a quick loop of them piled up hundreds.
+        // Each failed launch used to leave four descriptors open for a while, so a quick loop of them piled up many.
         let before = openDescriptorCount()
         for _ in 0..<150 {
             _ = try? await r.run("echo", [], in: URL(filePath: "/no/such/folder"), timeout: .seconds(5))
@@ -127,11 +127,11 @@ import Testing
         #expect(await eventually { !isAlive(pid) })
     }
 
-    @Test func timeoutAsksTheChildToStopBeforeKillingIt() async throws {
+    @Test func timeoutAsksTheChildToStop() async throws {
         let dir = try TempDir(named: "Children")
         let marker = dir.url.appending(path: "marker")
-        // The child gets to clean up when asked to stop, as git does with its lock files; SIGKILL would not let it.
-        let script = "trap 'echo stopped > \"$1\"; exit 0' TERM; while :; do sleep 0.1; done"
+        // The child cleans up when asked to stop, as git does with its lock files, and the call waits until it has.
+        let script = "trap 'echo stopped > \"$1\"; exit 0' TERM; \(idle)"
 
         await #expect(throws: CommandError.timedOut("sh")) {
             try await r.run("sh", ["-c", script, "sh", marker.path], in: nil, timeout: .seconds(1))
@@ -140,21 +140,32 @@ import Testing
         #expect(try String(contentsOf: marker, encoding: .utf8) == "stopped\n")
     }
 
-    @Test func killsAChildThatIgnoresTerminate() async throws {
+    @Test func stopsWaitingForAChildThatWontStop() async throws {
         let dir = try TempDir(named: "Children")
         let pidFile = dir.url.appending(path: "pid")
-        // The shell ignores SIGTERM, and so does the sleep that replaces it, so only SIGKILL can stop it. It does so
-        // before it writes its pid, and the timeout leaves it ample time to get that far.
-        let script = "trap '' TERM; echo $$ > \"$1\"; exec sleep 30"
-
-        await #expect(throws: CommandError.timedOut("sh")) {
-            try await r.run("sh", ["-c", script, "sh", pidFile.path], in: nil, timeout: .seconds(1))
+        let requests = dir.url.appending(path: "requests")
+        // The child notes each request to stop and carries on regardless. It does so before it writes its pid, and the
+        // timeout leaves it ample time to get that far.
+        let script = "trap 'echo asked >> \"$2\"' TERM; echo $$ > \"$1\"; \(idle)"
+        let start = ContinuousClock.now
+        let task = Task {
+            try await r.run("sh", ["-c", script, "sh", pidFile.path, requests.path], in: nil, timeout: .seconds(1))
         }
-
         let pid = try #require(await waitForPID(in: pidFile))
-        #expect(await eventually { !isAlive(pid) })
+        defer { kill(pid, SIGKILL) }  // the runner leaves the child running, so the test has to stop it itself
+
+        await #expect(throws: CommandError.timedOut("sh")) { try await task.value }
+        #expect(ContinuousClock.now - start < .seconds(4))  // the timeout and the grace period add up to about 2 s
+
+        // Long enough for a second request, or a kill, to show: the child was asked once, and was left alone.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(isAlive(pid))
+        #expect(try String(contentsOf: requests, encoding: .utf8) == "asked\n")
     }
 }
+
+/// A shell loop that idles for ten seconds at most, so that a test that fails cannot leave its child behind for long.
+private let idle = "n=0; while [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done"
 
 /// An executable shell script `name` in `dir` that prints `output`.
 @discardableResult

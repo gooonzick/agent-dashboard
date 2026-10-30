@@ -35,8 +35,8 @@ public protocol CommandRunning: Sendable {
 /// `searchPaths` instead of the inherited `PATH`, and the child gets a `PATH` made of those same folders.
 /// The rest of the environment (`HOME`, `SSH_AUTH_SOCK` and so on) is inherited.
 public struct CommandRunner: CommandRunning {
-    /// How long a child gets to stop after being asked to, before it is killed.
-    private static let killDelay: Duration = .seconds(1)
+    /// How long a child gets to stop after being asked to, before the call stops waiting for it.
+    private static let terminationGrace: Duration = .seconds(1)
 
     private let searchPaths: [String]
 
@@ -55,9 +55,10 @@ public struct CommandRunner: CommandRunning {
     ///
     /// The child's input is empty, so a tool that asks for some gets end-of-file instead of hanging.
     /// When `timeout` runs out the child is asked to stop (`terminate()`) and, once it has, the call throws
-    /// `CommandError.timedOut(tool)`. A child that is still there `killDelay` later is killed and no longer waited
-    /// for, so the call is over soon after `timeout` plus `killDelay` at the latest.
-    /// Cancelling the calling task stops the child in the same way, and the call throws `CancellationError`.
+    /// `CommandError.timedOut(tool)`. A child that has not stopped `terminationGrace` later is left running and no
+    /// longer waited for, so the call is over soon after `timeout` plus `terminationGrace` at the latest. It is asked
+    /// to stop only once and never killed, because that could keep it from cleaning up (git removing its lock files).
+    /// Cancelling the calling task asks the child to stop in the same way, and the call throws `CancellationError`.
     /// Other launch failures, such as a working directory that does not exist, are thrown as Foundation errors.
     public func run(
         _ tool: String, _ args: [String], in directory: URL?, timeout: Duration
@@ -97,8 +98,6 @@ public struct CommandRunner: CommandRunning {
         Self.forward(stdoutPipe, to: emit, as: Event.stdout)
         Self.forward(stderrPipe, to: emit, as: Event.stderr)
         defer {
-            // Still running means the task was cancelled or we gave up waiting.
-            if process.isRunning { process.terminate() }
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             emit.finish()
@@ -108,8 +107,8 @@ public struct CommandRunner: CommandRunning {
             // Sleeping throws once the run is over and the timer is cancelled.
             guard (try? await Task.sleep(for: timeout)) != nil else { return }
             emit.yield(.timeout)
-            guard (try? await Task.sleep(for: Self.killDelay)) != nil else { return }
-            emit.yield(.kill)
+            guard (try? await Task.sleep(for: Self.terminationGrace)) != nil else { return }
+            emit.yield(.giveUp)
         }
         defer { timer.cancel() }
 
@@ -131,8 +130,9 @@ public struct CommandRunner: CommandRunning {
             case .timeout:
                 timedOut = true
                 process.terminate()
-            case .kill:
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            case .giveUp:
+                // Not killed: for a child stuck in the kernel a SIGKILL could take effect ahead of the SIGTERM that is
+                // still pending, and git's SIGTERM handler is what removes its lock files.
                 throw CommandError.timedOut(tool)
             }
             guard let exitCode, openStreams == 0 else { continue }
@@ -143,7 +143,9 @@ public struct CommandRunner: CommandRunning {
                 stderr: String(decoding: stderr, as: UTF8.self)
             )
         }
-        // The stream ends early only when the calling task is cancelled.
+        // The stream ends early only when the calling task is cancelled. The child is asked to stop, unless the timeout
+        // has done so already.
+        if process.isRunning && !timedOut { process.terminate() }
         throw CancellationError()
     }
 
@@ -190,6 +192,6 @@ private enum Event: Sendable {
     case exited(Int32)
     /// The time is up: ask the child to stop.
     case timeout
-    /// The child had its time to stop: kill it if it is still there, and stop waiting.
-    case kill
+    /// The child has had its time to stop: stop waiting for it.
+    case giveUp
 }
