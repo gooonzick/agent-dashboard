@@ -15,6 +15,19 @@ public final class TempDir: Sendable {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     }
 
+    /// `url` as the file system itself reports it.
+    ///
+    /// The system temporary directory is under `/var`, a symlink to `/private/var`, and git and the process APIs
+    /// report the `/private/var` form. Paths read back from them are compared with this, not with `url.path`.
+    ///
+    /// It calls `realpath` itself rather than `CoreModels.canonicalPath`, because the tests of that function take this
+    /// as their reference.
+    public var canonicalPath: String {
+        guard let resolved = realpath(url.path, nil) else { return url.path }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     deinit {
         try? FileManager.default.removeItem(at: root)
     }
