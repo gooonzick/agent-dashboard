@@ -17,11 +17,15 @@ let package = Package(
         .target(name: "CoreModels", swiftSettings: strict),
         .target(name: "Shell", swiftSettings: strict),
         .target(name: "Discovery", dependencies: ["CoreModels"], swiftSettings: strict),
+        .target(name: "GitKit", dependencies: ["CoreModels", "Shell"], swiftSettings: strict),
         .target(name: "AppShell", dependencies: ["CoreModels"], swiftSettings: strict),
-        // Helpers shared by the test targets (temporary folders now; spawned processes and git repositories later).
-        .target(name: "TestSupport", path: "Tests/TestSupport", swiftSettings: strict),
+        // Helpers shared by the test targets: temporary folders, and real git repositories to run tests against.
+        .target(name: "TestSupport", dependencies: ["Shell"], path: "Tests/TestSupport", swiftSettings: strict),
         .testTarget(name: "CoreModelsTests", dependencies: ["CoreModels", "TestSupport"], swiftSettings: strict),
         .testTarget(name: "ShellTests", dependencies: ["Shell", "TestSupport"], swiftSettings: strict),
         .testTarget(name: "DiscoveryTests", dependencies: ["Discovery", "TestSupport"], swiftSettings: strict),
+        .testTarget(
+            name: "GitKitTests", dependencies: ["GitKit", "CoreModels", "Shell", "TestSupport"],
+            swiftSettings: strict),
     ]
 )
