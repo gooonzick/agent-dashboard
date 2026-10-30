@@ -1,1 +1,8 @@
+# Xcode / SwiftPM (the project is generated from project.yml)
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.build/
+
+# macOS
 .DS_Store
