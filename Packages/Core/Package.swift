@@ -15,7 +15,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "CoreModels", swiftSettings: strict),
+        .target(name: "Shell", swiftSettings: strict),
         .target(name: "AppShell", dependencies: ["CoreModels"], swiftSettings: strict),
+        // Helpers shared by the test targets (temporary folders now; spawned processes and git repositories later).
+        .target(name: "TestSupport", path: "Tests/TestSupport", swiftSettings: strict),
         .testTarget(name: "CoreModelsTests", dependencies: ["CoreModels"], swiftSettings: strict),
+        .testTarget(name: "ShellTests", dependencies: ["Shell", "TestSupport"], swiftSettings: strict),
     ]
 )
