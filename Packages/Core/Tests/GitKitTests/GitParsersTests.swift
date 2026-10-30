@@ -222,6 +222,21 @@ import Testing
         #expect(GitParsers.hasCommits(porcelainV2: ""))  // nothing says there are none
     }
 
+    @Test func aBranchThatGitCouldNotNameIsTold() {
+        // Where git cannot say which branch HEAD is on, because the ref of the branch is damaged, it says `(unknown)`.
+        #expect(GitParsers.hasUnknownBranch(porcelainV2: "# branch.oid (initial)\n# branch.head (unknown)\n"))
+        #expect(!GitParsers.hasUnknownBranch(porcelainV2: "# branch.oid (initial)\n# branch.head main\n"))  // unborn
+        #expect(!GitParsers.hasUnknownBranch(porcelainV2: "# branch.oid 1\n# branch.head (detached)\n"))
+        #expect(!GitParsers.hasUnknownBranch(porcelainV2: "# branch.oid 1\n# branch.head (unknown)-fix\n"))  // a name
+        #expect(!GitParsers.hasUnknownBranch(porcelainV2: ""))
+    }
+
+    @Test func aFileNamedLikeTheHeaderIsNoHeader() {
+        // Entries begin with their marker, so the name of a file cannot pass for a line of the header.
+        let out = "# branch.oid 1\n# branch.head main\n? # branch.head (unknown)\n"
+        #expect(!GitParsers.hasUnknownBranch(porcelainV2: out))
+    }
+
     // MARK: Stashes
 
     @Test func aStashBelongsToTheBranchWithTheWholeName() {

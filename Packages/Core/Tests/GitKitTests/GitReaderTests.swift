@@ -153,6 +153,49 @@ private let branch = "feature/ünï"
         #expect(status.ahead == 0 && status.behind == 0)
     }
 
+    @Test(arguments: [
+        "",  // what a crash leaves behind: a ref file with nothing in it
+        "this is not a hash",
+    ])
+    func aDamagedBranchRefMakesTheStatusAnError(contents: String) async throws {
+        // Git exits with 0 and says `(initial)` for the commit, as it does for a branch that has none, but `(unknown)`
+        // for the branch. Read as a branch without commits, the status would be: no upstream, nothing ahead, no date.
+        // That is not what a branch that has commits, and an upstream, has.
+        let (repo, _) = try await sandbox.makeRepository()
+        try await sandbox.commit("two", in: repo)
+        try sandbox.write(contents, to: ".git/refs/heads/main", in: repo)
+
+        let error = await #expect(throws: GitError.self) { try await reader.status(worktree: repo) }
+
+        guard case .unexpectedOutput(let command, let output)? = error else {
+            Issue.record("expected a GitError.unexpectedOutput, got \(String(describing: error))")
+            return
+        }
+        #expect(command.contains("git") && command.contains("status") && command.contains(repo.path))
+        #expect(output == "# branch.head (unknown)")
+    }
+
+    @Test func aBranchRefToAMissingCommitMakesTheStatusAnError() async throws {
+        // Git itself fails here (exit 128), so there is no value to read wrongly. This pins that it stays an error.
+        let repo = try await sandbox.initRepository(named: "damaged")
+        try await sandbox.commit("one", in: repo)
+        try sandbox.write(String(repeating: "1", count: 40), to: ".git/refs/heads/main", in: repo)
+
+        await expectFailure { _ = try await reader.status(worktree: repo) }
+    }
+
+    @Test func aBranchThatDoesNotExistYetHasAStatusWithoutADate() async throws {
+        // Unlike a damaged ref it is a state that git names: `(initial)`, and the name of the branch to be.
+        let fresh = try await sandbox.initRepository(named: "fresh")
+        try sandbox.write("loose\n", to: "notes.txt", in: fresh)
+        let (repo, _) = try await sandbox.makeRepository()
+        let orphan = sandbox.url.appending(path: "worktrees/orphan")
+        try await sandbox.git(["worktree", "add", "--orphan", "-b", "orphan", orphan.path], in: repo)
+
+        #expect(try await reader.status(worktree: fresh) == WorktreeStatus(untracked: 1))
+        #expect(try await reader.status(worktree: orphan) == WorktreeStatus())
+    }
+
     @Test func aBranchThatTracksNothingHasNoUpstream() async throws {
         let (repo, _) = try await sandbox.makeRepository()
         let worktree = try await sandbox.addWorktree(of: repo, branch: "local", in: "worktrees/local", from: "main")

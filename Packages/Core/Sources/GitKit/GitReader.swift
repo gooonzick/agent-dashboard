@@ -35,7 +35,7 @@ public protocol GitReading: Sendable {
     func worktrees(repo: URL) async throws -> [Worktree]
 
     /// The status of the worktree at `worktree`. Untracked files and changes in submodules count, whatever the
-    /// configuration of git says about showing them.
+    /// configuration of git says about showing them. A branch whose ref is damaged has no status: that is an error.
     func status(worktree: URL) async throws -> WorktreeStatus
 
     /// How many stashes were made on `branch` in the repository at `repo`. The stashes of a repository are shared by
@@ -88,6 +88,12 @@ public struct GitReader: GitReading {
         // worktree that has some. So both are asked for, whatever is set.
         let arguments = ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"]
         let porcelain = try await output(of: arguments, in: worktree)
+        // A branch whose ref is damaged has commits that git cannot reach, and git exits with 0 all the same, with
+        // `(initial)` for the commit, as for a branch that has none. Read that way, the status would say that there is
+        // no upstream, nothing ahead and no date. Git has no value for it, and neither has this.
+        guard !GitParsers.hasUnknownBranch(porcelainV2: porcelain) else {
+            throw unexpectedOutput(of: arguments, in: worktree, "# branch.head (unknown)")
+        }
         // A branch that has no commit has no date of one, and `git log` fails on it.
         guard GitParsers.hasCommits(porcelainV2: porcelain) else {
             return GitParsers.status(porcelainV2: porcelain, lastCommit: nil)
@@ -118,8 +124,9 @@ public struct GitReader: GitReading {
             throw failure(of: arguments, in: worktree, result)
         }
         // A count that cannot be read must not become "nothing is missing".
-        guard let count = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw unexpectedOutput(of: arguments, in: worktree, result)
+        let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let count = Int(text) else {
+            throw unexpectedOutput(of: arguments, in: worktree, text)
         }
         return count
     }
@@ -201,10 +208,8 @@ public struct GitReader: GitReading {
             stderr: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func unexpectedOutput(of arguments: [String], in directory: URL, _ result: CommandResult) -> GitError {
-        .unexpectedOutput(
-            command: Self.description(of: arguments, in: directory),
-            output: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    private func unexpectedOutput(of arguments: [String], in directory: URL, _ output: String) -> GitError {
+        .unexpectedOutput(command: Self.description(of: arguments, in: directory), output: output)
     }
 
     /// The command as an error names it, without the options that every command gets.

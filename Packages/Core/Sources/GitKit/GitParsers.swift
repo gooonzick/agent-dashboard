@@ -92,6 +92,14 @@ public enum GitParsers {
         !Line.all(in: porcelainV2).contains { $0.value(after: "# branch.oid ") == "(initial)" }
     }
 
+    /// Whether git could not say which branch HEAD is on. It prints `(unknown)` as the branch (`# branch.head`) when
+    /// the ref of the branch is damaged, as a crash can leave it: empty, or not a hash. It says `(initial)` for the
+    /// commit then, as it does for a branch that has none yet, but a branch that has none yet has its name. A branch
+    /// that is really named `(unknown)` is taken for this, which is an error: the safe way to be wrong.
+    public static func hasUnknownBranch(porcelainV2: String) -> Bool {
+        Line.all(in: porcelainV2).contains { $0.value(after: "# branch.head ") == "(unknown)" }
+    }
+
     /// `+2 -30`.
     private static func aheadBehind(_ counts: String) -> (ahead: Int, behind: Int)? {
         let words = counts.split(separator: " ")
