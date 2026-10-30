@@ -7,12 +7,13 @@ public protocol RepoScanning: Sendable {
     /// once however many roots lead to it.
     ///
     /// A repository is a folder that holds a `.git` folder. A `.git` file, as in a worktree or a submodule, does not
-    /// make one. The walk goes on below a repository, so repositories inside repositories are found as well.
+    /// make one, so such a folder is not reported, but it counts as part of a project for the tool folders below. The
+    /// walk goes on below a repository, so repositories inside repositories are found as well.
     ///
     /// The walk does not follow symlinks, does not look inside packages such as `.app`, and passes over folders it is
     /// not allowed to read. The tool folders in `ExclusionRules.serviceDirectoryNames` are not entered, except `tmp`
-    /// and `build`, which are only skipped inside a repository: outside one they are ordinary folders that may hold
-    /// projects.
+    /// and `build`, which are only skipped inside a project, that is inside a repository or a worktree or submodule
+    /// (a folder with a `.git` file): elsewhere they are ordinary folders that may hold projects.
     ///
     /// A folder in `rules.excludedPaths` is left out with everything in it. That holds for a root, too, but not for a
     /// folder above a root, so that a disk under `/Volumes` can be scanned although the default rules exclude
@@ -27,8 +28,19 @@ public protocol RepoScanning: Sendable {
 }
 
 public struct RepoScanner: RepoScanning {
-    /// Service folders that are ordinary folders outside a repository: anyone can name a folder `tmp` or `build`.
-    private static let skippedOnlyInsideRepositories: Set<String> = ["tmp", "build"]
+    /// Service folders that are ordinary folders outside a project: anyone can name a folder `tmp` or `build`.
+    private static let skippedOnlyInsideProjects: Set<String> = ["tmp", "build"]
+
+    /// What the `.git` in a folder is.
+    private enum DotGit {
+        /// There is none, or it is something that is not opened, a symlink say.
+        case nothing
+        /// A folder: the folder is a repository.
+        case folder
+        /// A regular file, as in a worktree or a submodule: the folder is a checkout of a repository that lies
+        /// elsewhere.
+        case file
+    }
 
     public init() {}
 
@@ -71,12 +83,24 @@ public struct RepoScanner: RepoScanning {
         guard !excluded.contains(root) else { return true }
         guard !isCancelled() else { return false }
 
-        // The depth of the topmost repository that the walk is in, with `root` at level 0. `nil` outside repositories.
-        var repositoryLevel: Int?
-        if isRepository(root) {
-            repositories.insert(root)
-            repositoryLevel = 0
+        // The depth of the topmost project folder that the walk is in, with `root` at level 0. `nil` outside projects.
+        var projectLevel: Int?
+        // What the `.git` in `directory`, which is at `level`, makes of it. Only a `.git` folder makes a repository. A
+        // `.git` file, as in a worktree or a submodule, does not (git lists the worktrees of a repository, they are not
+        // found by walking). The folder is a project all the same, so the tool folders in it are skipped as they are
+        // in a repository, and the clone in the `tmp` of every worktree is not taken for a project of its own.
+        func note(_ directory: String, at level: Int) {
+            switch dotGit(in: directory) {
+            case .folder:
+                repositories.insert(canonicalPath(directory))
+                projectLevel = projectLevel ?? level
+            case .file:
+                projectLevel = projectLevel ?? level
+            case .nothing:
+                break
+            }
         }
+        note(root, at: 0)
 
         // Hidden folders are walked too: the `.git` of a repository is one. With no error handler, a folder that cannot
         // be read is passed over without a word.
@@ -95,30 +119,32 @@ public struct RepoScanner: RepoScanning {
             else { continue }
             guard !isCancelled() else { return false }
 
-            // The walk has left a repository once it is back at the level of that repository's folder, or above.
-            if let level = repositoryLevel, items.level <= level { repositoryLevel = nil }
+            // The walk has left a project once it is back at the level of that project's folder, or above.
+            if let level = projectLevel, items.level <= level { projectLevel = nil }
 
             let path = item.path
             let name = item.lastPathComponent
             let isServiceDirectory =
                 ExclusionRules.serviceDirectoryNames.contains(name)
-                && (repositoryLevel != nil || !skippedOnlyInsideRepositories.contains(name))
+                && (projectLevel != nil || !skippedOnlyInsideProjects.contains(name))
             if excluded.contains(path) || values.isPackage == true || isServiceDirectory {
                 items.skipDescendants()
                 continue
             }
 
-            if isRepository(path) {
-                repositories.insert(canonicalPath(path))
-                repositoryLevel = repositoryLevel ?? items.level
-            }
+            note(path, at: items.level)
         }
         return true
     }
 
-    /// Whether `directory` holds a `.git` folder. A symlink named `.git` does not count: symlinks are not opened.
-    private static func isRepository(_ directory: String) -> Bool {
+    /// What the `.git` in `directory` is. A symlink named `.git` is nothing: symlinks are not opened.
+    private static func dotGit(in directory: String) -> DotGit {
         var info = stat()
-        return lstat(directory + "/.git", &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+        guard lstat(directory + "/.git", &info) == 0 else { return .nothing }
+        switch info.st_mode & S_IFMT {
+        case S_IFDIR: return .folder
+        case S_IFREG: return .file
+        default: return .nothing
+        }
     }
 }

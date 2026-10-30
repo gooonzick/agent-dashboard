@@ -71,11 +71,13 @@ private let genericFolders = ["tmp", "build"]
 
     @Test func skipsARootThatIsExcludedItself() async throws {
         let tmp = try TempDir(named: "My Projects")
-        try tmp.makeDirectories("Backup/x/.git", "Other/y/.git")
+        // Three roots. Backup holds a repository, and Gone is one with another inside it: both are excluded as roots.
+        try tmp.makeDirectories("Backup/x/.git", "Gone/.git", "Gone/inner/.git", "Other/y/.git")
+        let excluding = [tmp.canonicalPath + "/Backup", tmp.canonicalPath + "/Gone"]
 
-        let found = await tmp.scan(excluding: [tmp.canonicalPath + "/Backup"])
+        let found = await tmp.scan(in: "Backup", "Gone", "Other", excluding: excluding)
 
-        #expect(found.map(\.lastPathComponent) == ["y"])
+        #expect(found.map(\.lastPathComponent) == ["y"])  // not even the excluded repository itself
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -216,6 +218,31 @@ private let genericFolders = ["tmp", "build"]
         #expect(found.map(\.lastPathComponent) == ["a", "lib"])
     }
 
+    @Test func skipsServiceDirsInsideWorktreeCheckouts() async throws {
+        // A worktree or a submodule has a .git file. It is no repository, so it is not reported. It is a checkout of
+        // one all the same, so a repository in its tmp or build folder is no project of its own, as in a repository.
+        // The worktrees that matter lie beside their repository, not in it.
+        let tmp = try TempDir(named: "My Projects")
+        try tmp.makeFile("wt/.git")
+        try tmp.makeFile("wt2/.git")
+        try tmp.makeDirectories(
+            "wt/tmp/protos/.git", "wt/build/_deps/dep/.git", "wt2/tmp/clone/.git", "plain/tmp/proj/.git")
+
+        let found = await tmp.scan()
+
+        #expect(found.map(\.lastPathComponent) == ["proj"])  // neither wt nor wt2, nor what is in their tmp and build
+    }
+
+    @Test func skipsServiceDirsInAWorktreeCheckoutThatIsTheRoot() async throws {
+        let tmp = try TempDir(named: "My Projects")
+        try tmp.makeFile("wt/.git")
+        try tmp.makeDirectories("wt/tmp/protos/.git", "plain/tmp/proj/.git")
+
+        let found = await tmp.scan(in: "wt", "plain")
+
+        #expect(found.map(\.lastPathComponent) == ["proj"])
+    }
+
     @Test(arguments: toolFolders + genericFolders)
     func skipsServiceDirsInsideRepos(name: String) async throws {
         let tmp = try TempDir(named: "My Projects")
@@ -321,14 +348,14 @@ private extension TempDir {
             atPath: url.appending(path: path).path, withDestinationPath: destination)
     }
 
-    /// Scans this folder, or `subfolder` of it, with only `excludedPaths` left out and external volumes off.
-    /// A method of the `TempDir`, so that the folder is there for as long as the scan runs.
+    /// Scans this folder, or the `subfolders` of it as roots, with only `excludedPaths` left out and external volumes
+    /// off. A method of the `TempDir`, so that the folder is there for as long as the scan runs.
     func scan(
-        in subfolder: String? = nil, excluding excludedPaths: [String] = [],
+        in subfolders: String..., excluding excludedPaths: [String] = [],
         isCancelled: @Sendable () -> Bool = { false }
     ) async -> [URL] {
         let rules = ExclusionRules(excludedPaths: excludedPaths, includeExternalVolumes: false)
-        let root = subfolder.map { url.appending(path: $0) } ?? url
-        return await RepoScanner().scan(roots: [root], rules: rules, isCancelled: isCancelled)
+        let roots = subfolders.isEmpty ? [url] : subfolders.map { url.appending(path: $0) }
+        return await RepoScanner().scan(roots: roots, rules: rules, isCancelled: isCancelled)
     }
 }
