@@ -46,7 +46,8 @@ public protocol GitReading: Sendable {
     func remotes(repo: URL) async throws -> [Remote]
 
     /// How many commits of the worktree's HEAD no remote branch has: `git rev-list --count HEAD --not --remotes`.
-    /// All of them if there is no remote, and none if there is no commit yet.
+    /// All of them if there is no remote, and none if the branch does not exist yet. A branch whose ref is damaged has
+    /// commits that git cannot count: that is an error, and not none.
     func commitsNotOnAnyRemote(worktree: URL) async throws -> Int
 
     /// Whether `commit` is `other` or one of its ancestors. `nil` when `other` is not a commit that the repository at
@@ -111,10 +112,9 @@ public struct GitReader: GitReading {
         let arguments = ["rev-list", "--count", "HEAD", "--not", "--remotes"]
         let result = try await run(arguments, in: worktree)
         guard result.exitCode == 0 else {
-            // On a branch that has no commit, `HEAD` names nothing and git cannot count. No commit is then missing from
-            // a remote. If anything else is wrong, `rev-parse` fails as well, and the failure stands.
-            let head = try await run(["rev-parse", "--verify", "--quiet", "HEAD"], in: worktree)
-            if head.exitCode == 1 { return 0 }
+            // On a branch that has no commit yet, `HEAD` names nothing and git cannot count. No commit is then missing
+            // from a remote. Anything else that makes git fail stands as the failure that it is.
+            if try await headIsUnbornBranch(in: worktree) { return 0 }
             throw failure(of: arguments, in: worktree, result)
         }
         // A count that cannot be read must not become "nothing is missing".
@@ -149,6 +149,23 @@ public struct GitReader: GitReading {
     }
 
     // MARK: Running git
+
+    /// Whether HEAD is on a branch that does not exist yet, as it is in a repository that has no commit, or in a
+    /// worktree that was made with `--orphan`.
+    ///
+    /// `rev-list` fails in the same way for a branch that does not exist and for one whose ref is damaged, and so does
+    /// `rev-parse --verify --quiet HEAD`: it exits with 1 for both, a ref that a crash left empty included. So the ref
+    /// is asked for by its name. `show-ref --exists` exits with 2 for a ref that is not there, and only that is an
+    /// unborn branch: 0 is a ref that is there, so something else is wrong, and 1 one that is there and cannot be
+    /// read. `symbolic-ref` is as strict: it exits with 1 for a detached HEAD, which is on no branch, and with 128
+    /// when HEAD, or the ref that it names, cannot be read. `show-ref --exists` is from git 2.43. With an older git
+    /// this is never true, and the failure that the caller has stands.
+    private func headIsUnbornBranch(in directory: URL) async throws -> Bool {
+        let head = try await run(["symbolic-ref", "--quiet", "HEAD"], in: directory)
+        guard head.exitCode == 0 else { return false }
+        let ref = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await run(["show-ref", "--exists", ref], in: directory).exitCode == 2
+    }
 
     /// Runs `git <arguments>` in `directory` and returns the result, whatever the exit code.
     ///

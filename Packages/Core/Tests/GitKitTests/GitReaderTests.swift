@@ -334,6 +334,38 @@ private let branch = "feature/ünï"
         await expectFailure { _ = try await reader.commitsNotOnAnyRemote(worktree: repo) }
     }
 
+    @Test(arguments: [
+        "",  // what a crash leaves behind: a ref file with nothing in it
+        "this is not a hash",
+        "1111111111111111111111111111111111111111",  // a commit that is not there
+    ])
+    func aDamagedBranchRefIsNoBranchWithoutCommits(contents: String) async throws {
+        // The branch has two commits. Git cannot read them through the ref, and `git rev-list HEAD` fails, as it does
+        // for a branch that has none yet. `rev-parse --verify --quiet HEAD` exits with 1 for an empty ref and for a
+        // branch that does not exist, so it cannot tell them apart. A count of none here would be a guess.
+        let repo = try await sandbox.initRepository(named: "damaged")
+        try await sandbox.commit("one", in: repo)
+        try await sandbox.commit("two", in: repo)
+        try sandbox.write(contents, to: ".git/refs/heads/main", in: repo)
+
+        await expectFailure { _ = try await reader.commitsNotOnAnyRemote(worktree: repo) }
+    }
+
+    @Test func aBranchThatDoesNotExistYetHasNoCommitsToLose() async throws {
+        let repo = try await sandbox.initRepository(named: "fresh")
+
+        #expect(try await reader.commitsNotOnAnyRemote(worktree: repo) == 0)
+    }
+
+    @Test func aWorktreeOnAnOrphanBranchHasNoCommitsToLose() async throws {
+        // HEAD of a linked worktree is its own, and the branch that it names does not exist until the first commit.
+        let (repo, _) = try await sandbox.makeRepository()
+        let orphan = sandbox.url.appending(path: "worktrees/orphan")
+        try await sandbox.git(["worktree", "add", "--orphan", "-b", "orphan", orphan.path], in: repo)
+
+        #expect(try await reader.commitsNotOnAnyRemote(worktree: orphan) == 0)
+    }
+
     // MARK: Ancestry
 
     @Test func tellsWhetherACommitIsAnAncestorOfAnother() async throws {
