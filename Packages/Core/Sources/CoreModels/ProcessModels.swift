@@ -45,3 +45,64 @@ public struct ProcessRecord: Sendable, Equatable, Codable, Identifiable {
         self.listeningPorts = listeningPorts
     }
 }
+
+/// What a group of processes is, as far as the dashboard tells it apart.
+public enum ProcessKind: String, Sendable, Codable {
+    /// A session of Claude Code or of Codex, with the processes that it started.
+    case agentSession
+    /// Something in the group listens on a TCP port.
+    case devServer
+    /// The parent of the leader is launchd: the system started it, or whatever did has exited.
+    case daemon
+    /// The leader runs a file that lies in the worktree: a build product.
+    case builtHere
+    /// A shell, a login shell included.
+    case shell
+    /// Anything else.
+    case other
+}
+
+/// The processes of one worktree that belong together: a leader and the processes that it started.
+///
+/// A process is in one group at most: it leads it, or is one of its members. To stop the group is to stop all of
+/// them.
+public struct ProcessGroup: Sendable, Equatable, Codable, Identifiable {
+    /// The pid of the leader: no process leads two groups.
+    public var id: Int32 { leader.pid }
+    public let kind: ProcessKind
+    /// What the dashboard calls the group.
+    public let title: String
+    /// The process that the group is named for: the session of an agent, or the first process of its worktree to have
+    /// been started from outside it.
+    public let leader: ProcessRecord
+    /// The other processes of the group, in order of pid. Never the leader. For a session of the Claude app, the helper
+    /// that started it is among them.
+    public let members: [ProcessRecord]
+
+    public init(kind: ProcessKind, title: String, leader: ProcessRecord, members: [ProcessRecord]) {
+        self.kind = kind
+        self.title = title
+        self.leader = leader
+        self.members = members
+    }
+
+    /// The memory of the leader and of every member together. Not above the largest number: a sum that would not fit is
+    /// that number.
+    public var totalFootprint: UInt64 {
+        members.reduce(leader.footprintBytes) { sum, member in
+            let (total, overflow) = sum.addingReportingOverflow(member.footprintBytes)
+            return overflow ? .max : total
+        }
+    }
+
+    /// The TCP ports that the leader or a member listens on: ascending, each once.
+    public var ports: [UInt16] {
+        Array(Set(leader.listeningPorts).union(members.lazy.flatMap(\.listeningPorts))).sorted()
+    }
+
+    /// How long the leader has run at `now`: the group is as old as what it is named for, and its members may be older.
+    /// Never negative, though the kernel's clock and the caller's can be a moment apart.
+    public func uptime(now: Date) -> TimeInterval {
+        max(0, now.timeIntervalSince(leader.startDate))
+    }
+}
