@@ -24,10 +24,6 @@ public struct GitLabClient: ReviewProviding {
         let credential = try token?.headerValue()
         let url = try HostingAPI.url(
             host: host,
-            // A server of a company is asked at the port that its remote names, if it names one. For an `ssh://`
-            // remote that is the port of SSH, which the web interface does not have, and `RemoteURL` does not keep the
-            // scheme to tell the two apart. GitLab.com is asked at the usual port.
-            port: host == "gitlab.com" ? nil : remote.port,
             // The path of the project is one segment of the address, slashes and all: `team%2Fapp`.
             path: "/api/v4/projects/\(HostingAPI.encode(remote.projectPath))/merge_requests",
             query: [

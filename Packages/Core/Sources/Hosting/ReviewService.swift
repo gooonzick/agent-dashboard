@@ -23,8 +23,11 @@ public protocol ReviewLooking: Sendable {
 /// call is to ask again, so that a host that is back is seen as soon as it is. Callers that ask for the same branch
 /// while it is being asked for share the one request, and a host that is slow does not hold up another.
 public actor ReviewService: ReviewLooking {
+    /// The question: the project on a host, and a branch of it. The port of a remote is no part of it, as it is none of
+    /// the request.
     private struct Key: Hashable {
-        let remote: RemoteURL
+        let host: String
+        let projectPath: String
         let branch: String
     }
 
@@ -78,7 +81,7 @@ public actor ReviewService: ReviewLooking {
     }
 
     public func review(remote: RemoteURL, branch: String) async -> ReviewInfo {
-        let key = Key(remote: remote, branch: branch)
+        let key = Key(host: remote.host, projectPath: remote.projectPath, branch: branch)
         if let answer = kept[key] {
             if ContinuousClock.now < answer.until { return answer.info }
             kept[key] = nil
@@ -115,14 +118,14 @@ public actor ReviewService: ReviewLooking {
         if pending[key]?.generation == started { pending[key] = nil }
         switch outcome {
         case .success(let info) where info.state != .unknown:
-            errors[key.remote.host] = nil
+            errors[key.host] = nil
             // An answer to a request that was made before `invalidate()` is the one that was meant to be forgotten.
             if started == generation { kept[key] = Kept(info: info, until: .now + ttl) }
             return info
         case .success:
             return .unknown
         case .failure(let error):
-            errors[key.remote.host] = error.localizedDescription
+            errors[key.host] = error.localizedDescription
             return .unknown
         }
     }

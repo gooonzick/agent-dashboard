@@ -190,28 +190,6 @@ import Testing
         #expect(!url.contains("%25"))
     }
 
-    @Test func aPortOfASelfHostedServerIsKept() async throws {
-        let server = StubServer(routes: [list: .status(200, body: Data("[]".utf8))])
-        let client = GitLabClient(host: server.host, token: nil, session: server.session)
-
-        _ = try await client.review(
-            remote: try #require(RemoteURL("https://\(server.host):8443/team/app.git")), branch: "b")
-
-        #expect(server.requests.first?.url?.port == 8443)
-        #expect(server.requests.first?.url?.scheme == "https")
-    }
-
-    @Test func gitLabComIsAskedAtItsOwnAddressWhateverPortTheRemoteNames() async throws {
-        // A name that no other test uses: servers of tests are found by it, and two would be mistaken for each other.
-        let server = StubServer(host: "gitlab.com", routes: [list: .status(200, body: Data("[]".utf8))])
-        let client = GitLabClient(host: "gitlab.com", token: nil, session: server.session)
-
-        _ = try await client.review(
-            remote: try #require(RemoteURL("ssh://git@gitlab.com:2222/team/app.git")), branch: "b")
-
-        #expect(server.requests.first?.url?.host == "gitlab.com" && server.requests.first?.url?.port == nil)
-    }
-
     @Test func theTokenGoesInItsHeaderAndNowhereElse() async throws {
         let server = StubServer(routes: [list: .status(200, body: try fixture("gitlab-merged"))])
         let client = GitLabClient(host: server.host, token: "glpat-S3CRET", session: server.session)

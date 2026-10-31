@@ -140,28 +140,33 @@ private func listBody(_ provider: Provider, _ state: ReviewState) throws -> Data
         #expect(rig.listRequests == 2)
     }
 
-    @Test func anAnswerIsKeptPerProjectPortAndBranch() async throws {
+    @Test func anAnswerIsKeptPerProjectAndBranchAndNotPerPortOfTheRemote() async throws {
         let rig = try Rig()
         rig.server.answer(
             "/api/v4/projects/other/app/merge_requests", with: .status(200, body: try fixture("gitlab-draft")))
         let host = rig.server.host
-        let remotes = [
-            rig.remote, try #require(RemoteURL("git@\(host):other/app.git")),
+        // One question, asked by three remotes: the port of a remote is no part of it, as it is none of the request.
+        let ofOneProject = [
+            rig.remote, try #require(RemoteURL("ssh://git@\(host):2222/team/app.git")),
             try #require(RemoteURL("https://\(host):8443/team/app.git")),
         ]
+        let ofAnother = try #require(RemoteURL("git@\(host):other/app.git"))
 
-        for remote in remotes { _ = await rig.service.review(remote: remote, branch: "feature/x") }
-        _ = await rig.service.review(remote: rig.remote, branch: "feature/y")
-        #expect(rig.server.requests.count == 4)  // four that differ, four requests
+        func askEverything() async {
+            for remote in ofOneProject { _ = await rig.service.review(remote: remote, branch: "feature/x") }
+            _ = await rig.service.review(remote: ofAnother, branch: "feature/x")
+            _ = await rig.service.review(remote: rig.remote, branch: "feature/y")
+        }
 
-        for remote in remotes { _ = await rig.service.review(remote: remote, branch: "feature/x") }
-        _ = await rig.service.review(remote: rig.remote, branch: "feature/y")
-        #expect(rig.server.requests.count == 4)  // and they are all kept
+        await askEverything()
+        #expect(rig.server.requests.count == 3)  // three questions that differ, and no more
+
+        await askEverything()
+        #expect(rig.server.requests.count == 3)  // and they are all kept
 
         await rig.service.invalidate()  // everything is forgotten, not the one answer
-        for remote in remotes { _ = await rig.service.review(remote: remote, branch: "feature/x") }
-        _ = await rig.service.review(remote: rig.remote, branch: "feature/y")
-        #expect(rig.server.requests.count == 8)
+        await askEverything()
+        #expect(rig.server.requests.count == 6)
     }
 
     @Test func answersOfTwoHostsAreKeptApart() async throws {
@@ -400,7 +405,13 @@ private func listBody(_ provider: Provider, _ state: ReviewState) throws -> Data
 
     @Test func callsThatAskForOneBranchAtOnceShareOneRequest() async throws {
         let rig = try Rig(reply: .held)
-        let calls = (0..<8).map { _ in Task { await rig.review() } }
+        // Some of the callers have a remote with a port: it is the same question, and the same request.
+        let withPort = try #require(RemoteURL("ssh://git@\(rig.server.host):2222/\(rig.provider.projectPath).git"))
+        let calls = (0..<8).map { number in
+            Task {
+                await rig.service.review(remote: number.isMultiple(of: 2) ? rig.remote : withPort, branch: "feature/x")
+            }
+        }
         #expect(await waitUntil { rig.server.heldCount >= 1 })
         // A service that does not share would have sent its other requests by now. It is given time to, and one that
         // does share is not hurt by it: it waits for the answer.

@@ -65,13 +65,14 @@ enum HostingAPI {
 
     /// The `https` address of `path` on `host`, with `query` after it. `path` and the names and values of `query` are
     /// written in percent escapes already (see `encode`), and they are put into the address as they are.
-    static func url(
-        host: String, port: Int?, path: String, query: [(name: String, value: String)]
-    ) throws -> URL {
+    ///
+    /// It has no port: the usual one of HTTPS. The port that a remote names is never used for a request, since it is
+    /// mostly the port of SSH, which the web interface does not have, and `RemoteURL` does not keep the scheme that
+    /// would tell the two apart.
+    static func url(host: String, path: String, query: [(name: String, value: String)]) throws -> URL {
         var components = URLComponents()
         components.scheme = "https"
         components.host = host
-        components.port = port
         components.percentEncodedPath = path
         components.percentEncodedQueryItems = query.map { URLQueryItem(name: $0.name, value: $0.value) }
         // A host that passes `RemoteURL.isValidHost` always makes an address. If this one does not, nothing is asked.

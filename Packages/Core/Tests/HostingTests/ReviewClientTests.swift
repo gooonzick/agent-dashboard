@@ -254,6 +254,30 @@ let branchEncodings = [
 
     // MARK: What is asked, and of whom
 
+    @Test(
+        arguments: Provider.allCases,
+        [
+            // The port of a remote is mostly the one of SSH, which the web interface does not have, and `RemoteURL`
+            // does not keep the scheme to tell the two apart. The API is asked at the usual port of HTTPS, whatever
+            // the remote names, for GitLab and for a GitHub Enterprise server alike.
+            "ssh://git@{host}:2222/{path}.git", "ssh://git@{host}:22/{path}.git", "ssh://git@{host}/{path}.git",
+            "git@{host}:{path}.git", "git://{host}:9418/{path}.git",
+            // Not even when it may well be the one of the web interface.
+            "https://{host}:8443/{path}.git", "http://{host}:3000/{path}.git",
+        ])
+    func thePortOfARemoteIsNeverUsedForTheRequest(provider: Provider, form: String) async throws {
+        let server = StubServer(routes: [provider.listPath: .status(200, body: try provider.merged())])
+        let client = provider.client(host: server.host, token: "t", session: server.session)
+        let raw = form.replacing("{host}", with: server.host).replacing("{path}", with: provider.projectPath)
+
+        let r = try await client.review(remote: try #require(RemoteURL(raw)), branch: "feature/x")
+
+        #expect(r.state == .merged)
+        let url = try #require(server.requests.first?.url)
+        #expect(url.port == nil)
+        #expect(url.absoluteString.hasPrefix("https://\(server.host)\(provider.apiPath)?"), "\(url)")
+    }
+
     @Test(arguments: Provider.allCases)
     func theRequestIsAPlainHTTPSGetThatKeepsToItself(provider: Provider) async throws {
         let (server, client, remote) = try setUp(provider)

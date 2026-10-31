@@ -68,6 +68,12 @@ enum Provider: CaseIterable, Sendable, CustomTestStringConvertible {
         self == .gitLab ? "/api/v4/projects/team/app/merge_requests" : "/api/v3/repos/gooonzick/meetily/pulls"
     }
 
+    /// The path of a request as it is written in its address, on a host that is not `github.com`: with the slashes of a
+    /// project of GitLab in one segment of it, as `%2F`.
+    var apiPath: String {
+        self == .gitLab ? "/api/v4/projects/team%2Fapp/merge_requests" : "/api/v3/repos/gooonzick/meetily/pulls"
+    }
+
     /// The name of the query parameter that holds the branch.
     var branchParameter: String { self == .gitLab ? "source_branch" : "head" }
 

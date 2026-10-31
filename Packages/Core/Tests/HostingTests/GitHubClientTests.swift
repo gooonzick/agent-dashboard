@@ -199,7 +199,7 @@ import Testing
             routes: ["/repos/gooonzick/meetily/pulls": .status(200, body: try fixture("github-merged"))])
         let client = GitHubClient(host: "github.com", token: "t", session: server.session)
 
-        // The port of an `ssh://` remote is the one of SSH, and `github.com` has no API at it.
+        // The port of an `ssh://` remote is the one of SSH. No port is used: the API is at the usual one.
         let r = try await client.review(
             remote: try #require(RemoteURL("ssh://git@github.com:2222/gooonzick/meetily.git")), branch: "feature/x")
 
@@ -208,17 +208,6 @@ import Testing
             server.requests.first?.url?.absoluteString
                 == "https://api.github.com/repos/gooonzick/meetily/pulls"
                 + "?head=gooonzick:feature%2Fx&state=all&sort=updated&direction=desc&per_page=1")
-    }
-
-    @Test func aPortOfAnEnterpriseServerIsKept() async throws {
-        let server = StubServer(routes: [list: .status(200, body: Data("[]".utf8))])
-        let client = GitHubClient(host: server.host, token: nil, session: server.session)
-
-        _ = try await client.review(
-            remote: try #require(RemoteURL("https://\(server.host):8443/gooonzick/meetily.git")), branch: "b")
-
-        #expect(server.requests.first?.url?.port == 8443)
-        #expect(server.requests.first?.url?.path == "/api/v3/repos/gooonzick/meetily/pulls")
     }
 
     @Test func theTokenIsABearerAndTheAnswerIsAskedForAsJSONOfTheCurrentVersion() async throws {

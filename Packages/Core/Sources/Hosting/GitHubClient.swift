@@ -30,10 +30,6 @@ public struct GitHubClient: ReviewProviding {
         let isGitHubCom = host == "github.com"
         let url = try HostingAPI.url(
             host: isGitHubCom ? "api.github.com" : host,
-            // An Enterprise server is asked at the port that its remote names, if it names one. For an `ssh://`
-            // remote that is the port of SSH, which the web interface does not have, and `RemoteURL` does not keep the
-            // scheme to tell the two apart. GitHub.com is asked at the usual port.
-            port: isGitHubCom ? nil : remote.port,
             path: (isGitHubCom ? "" : "/api/v3") + "/repos/\(owner)/\(repository)/pulls",
             // `head` is the branch of the owner of the project, as `owner:branch`: a pull request from a fork has
             // another owner, and is not the one of this branch. The owner is written as it is, and the `:` stays.
