@@ -1,0 +1,19 @@
+[
+  {
+    "url": "https://api.github.com/repos/gooonzick/meetily/pulls/18",
+    "id": 1234567891,
+    "html_url": "https://github.com/gooonzick/meetily/pull/18",
+    "number": 18,
+    "state": "closed",
+    "locked": false,
+    "title": "Try something else",
+    "created_at": "2026-10-24T09:15:00Z",
+    "updated_at": "2026-10-24T10:00:00Z",
+    "closed_at": "2026-10-24T10:00:00Z",
+    "merged_at": null,
+    "merge_commit_sha": "7a8b9c0d1e2f30415263748596a7b8c9d0e1f203",
+    "draft": false,
+    "head": { "label": "gooonzick:feature/x", "ref": "feature/x", "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d" },
+    "base": { "label": "gooonzick:main", "ref": "main", "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e" }
+  }
+]

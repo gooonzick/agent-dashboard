@@ -28,6 +28,8 @@ let package = Package(
         .testTarget(
             name: "GitKitTests", dependencies: ["GitKit", "CoreModels", "Shell", "TestSupport"],
             swiftSettings: strict),
-        .testTarget(name: "HostingTests", dependencies: ["Hosting", "Shell"], swiftSettings: strict),
+        .testTarget(
+            name: "HostingTests", dependencies: ["Hosting", "CoreModels", "Shell"], resources: [.copy("Fixtures")],
+            swiftSettings: strict),
     ]
 )

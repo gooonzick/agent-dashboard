@@ -157,8 +157,9 @@ public actor HostingDetector {
 }
 
 /// Answers every redirect with "no". A host's answer is the one that the host gives, and not the one of a page that it
-/// points to, such as a sign-in page that says 200 to any request. A redirect may also lead off HTTPS.
-private final class RefuseRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+/// points to, such as a sign-in page that says 200 to any request. A redirect may also lead off HTTPS, or off the host,
+/// and take with it the token that a request carries in a header of its own.
+final class RefuseRedirects: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest
