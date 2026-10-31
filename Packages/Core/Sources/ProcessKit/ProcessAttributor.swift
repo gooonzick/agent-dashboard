@@ -8,7 +8,10 @@ import Foundation
 ///
 /// **Which worktree.** A process is in the deepest worktree that holds the first of these that lies in any:
 /// 1. its working directory;
-/// 2. the working directory of its nearest ancestor that lies in a worktree;
+/// 2. the working directory of its nearest ancestor that lies in a worktree, not counting an ancestor that launchd
+///    adopted (`ppid == 1`): it is a daemon, or what is left of a shell that exited, and it sits where it was started
+///    while what it starts works wherever it is asked to. A tmux server in a worktree does not bring in every shell
+///    below it. The process that launchd adopted is in its worktree by its own working directory all the same;
 /// 3. its executable, or an argument: one that is a path in the worktree, or `name=path` with such a path after the
 ///    first `=`. Of several worktrees the deepest wins; of as deep ones, the one of the executable, then of the first
 ///    argument.
@@ -22,7 +25,9 @@ import Foundation
 /// `/claude.app/Contents/MacOS/`) and `codex` (unless it was started with the argument `app-server`, which makes it the
 /// daemon) lead a session. Its members are all of its descendants that are in its worktree or in none, whatever they
 /// are called and wherever they run, and the helper `disclaimer` of the Claude app if that is its parent, in whatever
-/// worktree the helper is. A session inside a session of the same worktree is part of the outer one.
+/// worktree the helper is. If launchd adopted the leader, the descendants that are in none are not taken, as it passes
+/// no folder down to them: the session is what is in its worktree by itself. A session inside a session of the same
+/// worktree is part of the outer one.
 ///
 /// A session of Claude Code is titled `Claude Code · desktop` if the Claude app started it, which the helper shows, and
 /// `Claude Code · CLI` if not. Then comes `, 3 MCP servers`, for the children of the session that have `mcp` in an
@@ -59,14 +64,16 @@ public struct ProcessAttributor: Sendable {
         var claimed = Set<Int32>()
         var found: [(root: Int, group: ProcessGroup)] = []
 
-        // The sessions take what is theirs first, and everything else is grouped out of what is left.
-        for leader in tree.processes {
+        // The sessions take what is theirs first, and everything else is grouped out of what is left. The outermost
+        // session goes first: a session inside it is taken with the rest, and is none of its own.
+        for leader in sessionLeaders(in: tree, rootOf: rootOf) where !claimed.contains(leader.pid) {
             guard let agent = leader.sessionAgent, let root = rootOf[leader.pid] else { continue }
-            // What a session takes: processes of its worktree, and those that are in none.
-            func isOfTheSession(_ process: ProcessRecord) -> Bool { (rootOf[process.pid] ?? root) == root }
-            // A session in a session of the same worktree is taken with the rest by the outer one.
-            let outer = tree.ancestors(of: leader).prefix(while: isOfTheSession)
-            guard !outer.contains(where: { $0.sessionAgent != nil && rootOf[$0.pid] == root }) else { continue }
+            // What a session takes: processes of its worktree, and those that are in none, unless launchd adopted the
+            // leader. Its folder is not passed down, so only what is in the worktree by itself is the session's.
+            let takesWhatIsInNoWorktree = leader.ppid != 1
+            func isOfTheSession(_ process: ProcessRecord) -> Bool {
+                rootOf[process.pid].map { $0 == root } ?? takesWhatIsInNoWorktree
+            }
 
             var members = tree.descendants(of: leader) { isOfTheSession($0) && !claimed.contains($0.pid) }
             // The helper wraps the session, whatever worktree it is in itself: the Claude app starts it in a spare
@@ -119,9 +126,11 @@ public struct ProcessAttributor: Sendable {
 
         var result: [Int32: Int] = [:]
         for process in tree.processes {
+            // An ancestor that launchd adopted passes nothing down: its folder is where it was started, and what it
+            // started works elsewhere. It is still in its worktree itself, by its own folder.
             result[process.pid] =
                 byFolder[process.pid]
-                ?? tree.ancestors(of: process).lazy.compactMap { byFolder[$0.pid] }.first
+                ?? tree.ancestors(of: process).lazy.filter { $0.ppid != 1 }.compactMap { byFolder[$0.pid] }.first
                 ?? deepestRoot(containingThePathsOf: process)
         }
         return result
@@ -153,6 +162,16 @@ public struct ProcessAttributor: Sendable {
     }
 
     // MARK: Groups
+
+    /// The processes that lead a session, the outermost first: of two in one chain the one above comes first, so that
+    /// the session it takes is decided before one inside it. Otherwise by pid.
+    private func sessionLeaders(in tree: ProcessTree, rootOf: [Int32: Int]) -> [ProcessRecord] {
+        tree.processes
+            .filter { $0.sessionAgent != nil && rootOf[$0.pid] != nil }
+            .map { (leader: $0, depth: tree.ancestors(of: $0).count) }
+            .sorted { ($0.depth, $0.leader.pid) < ($1.depth, $1.leader.pid) }
+            .map(\.leader)
+    }
 
     private static func title(
         of leader: ProcessRecord, agent: Agent, members: [ProcessRecord], startedByTheApp: Bool

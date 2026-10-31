@@ -232,6 +232,49 @@ extension ProcessAttributorTests {
             #expect(result == ["/r/a": [[10], [20, 21, 22]], "/r/b": [[11, 12]]])
         }
 
+        @Test func aProcessThatLaunchdAdoptedKeepsItsFolderToItself() {
+            // A tmux server sits in a worktree, because it was started from there. The shells below it are in whatever
+            // project their panes were opened in, and that is no worktree: the server's folder says nothing about them.
+            let elsewhere = "/Users/dev/projects/other"
+            let processes = [
+                proc(10, "tmux", parent: 1, exe: "/opt/homebrew/bin/tmux", args: ["tmux: server"], cwd: worktree),
+                proc(11, "zsh", parent: 10, exe: "/bin/zsh", args: ["-zsh"], cwd: elsewhere),
+                proc(12, "vim", parent: 11, cwd: elsewhere),
+                proc(13, "node", parent: 11, args: ["node", "serve.js"], cwd: elsewhere, ports: [3000]),
+            ]
+            let result = attribute(processes)
+            #expect(shape(result) == [worktree: [[10]]])  // the server alone, and no group for what is below it
+            #expect(result[worktree]?.first?.kind == .daemon && result[worktree]?.first?.title == "tmux")
+        }
+
+        @Test func onlyAProcessThatLaunchdAdoptedKeepsItsFolderToItself() {
+            // The same chain twice. When another process started `make`, it passes its folder down to `cc`.
+            func groups(startedBy parent: Int32) -> [String: [[Int32]]] {
+                shape(
+                    attribute([proc(10, "make", parent: parent, cwd: worktree), proc(11, "cc", parent: 10, cwd: "/")]))
+            }
+            #expect(groups(startedBy: nobody) == [worktree: [[10, 11]]])
+            #expect(groups(startedBy: 0) == [worktree: [[10, 11]]])  // the kernel is not launchd
+            #expect(groups(startedBy: 1) == [worktree: [[10]]])
+        }
+
+        @Test func aChildOfTheCodexDaemonThatRunsInAnotherProjectIsNotInTheWorktreeOfTheDaemon() {
+            // `codex app-server` sits in the folder of the repository and launchd adopted it. What it starts runs in
+            // the project that it was asked about: if that is no worktree, it is in none, and no session of this one.
+            let dashboard = "/Users/dev/projects/dashboard"
+            let codex = "/Users/dev/.codex/packages/app-server-daemon/releases/0.166.0-aarch64-apple-darwin/bin/codex"
+            func groups(childIn folder: String) -> [String: [[Int32]]] {
+                let processes = [
+                    proc(10, "codex", parent: 1, exe: codex, args: [codex, "app-server", "daemon"], cwd: dashboard),
+                    proc(11, "codex", parent: 10, exe: codex, args: [codex, "exec", "fix the tests"], cwd: folder),
+                ]
+                return shape(attribute(processes, roots: [dashboard]))
+            }
+            #expect(groups(childIn: "/Users/dev/projects/other") == [dashboard: [[10]]])
+            // In the repository, it is a session of it by its own folder.
+            #expect(groups(childIn: "\(dashboard)/apps/web") == [dashboard: [[10], [11]]])
+        }
+
         @Test func anAncestorBeatsWhatTheProcessItselfRunsAndIsGiven() {
             let child = proc(11, "tool", parent: 10, args: ["tool", "/r/b/file"])
             let withAncestor = [proc(10, "make", parent: nobody, cwd: "/r/a"), child]
@@ -513,6 +556,35 @@ extension ProcessAttributorTests {
             #expect(shape(result) == ["/r/a": [[100]], "/r/b": [[101, 102]]])
             #expect(result["/r/a"]?.first?.title == "Claude Code · CLI")  // `claude mcp serve` is not its server
             #expect(result["/r/b"]?.first?.kind == .agentSession)
+        }
+
+        @Test func aSessionThatLaunchdAdoptedTakesOnlyWhatIsInItsWorktreeByItself() throws {
+            // The shell of the session is gone, so launchd adopted it: the folder it sits in is not passed down to what
+            // it started. What is in the worktree by its own folder is still the session's.
+            func session(startedBy parent: Int32) throws -> ProcessGroup {
+                let processes = [
+                    proc(10, "claude", parent: parent, exe: Fixture.cliClaude, args: ["claude"], cwd: worktree),
+                    proc(11, "node", parent: 10, args: ["node", "a-mcp.js"], cwd: worktree),
+                    proc(12, "node", parent: 10, args: ["node", "b-mcp.js"], cwd: "/"),
+                    proc(13, "sh", parent: 12, cwd: "/"),
+                ]
+                return try theOnly(attribute(processes)[worktree])
+            }
+            let started = try session(startedBy: nobody)
+            #expect(pids(of: started) == [10, 11, 12, 13] && started.title == "Claude Code · CLI, 2 MCP servers")
+            let adopted = try session(startedBy: 1)
+            #expect(pids(of: adopted) == [10, 11] && adopted.title == "Claude Code · CLI, 1 MCP server")
+        }
+
+        @Test func aSessionInsideASessionIsTakenByTheOuterOneWhateverTheirPids() {
+            // Pids wrap around: the inner `claude` was started later, and has the lower pid.
+            let processes = [
+                proc(60, "claude", parent: nobody, exe: Fixture.cliClaude, args: ["claude"], cwd: worktree),
+                proc(
+                    20, "claude", parent: 60, exe: Fixture.cliClaude, args: ["claude", "mcp", "serve"], cwd: worktree),
+                proc(30, "node", parent: 20, cwd: worktree),
+            ]
+            #expect(shape(attribute(processes)) == [worktree: [[60, 20, 30]]])
         }
 
         @Test func aSessionInsideAProcessThatIsNoSessionOfTheWorktreeIsASessionOfItsOwn() {
