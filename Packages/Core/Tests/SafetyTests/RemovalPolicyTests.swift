@@ -117,8 +117,10 @@ private func facts(
         #expect(RemovalPolicy.evaluate(dirty) == .mainWorktree)
         #expect(RemovalPolicy.evaluate(facts(main: true, prunable: true)) == .mainWorktree)
         #expect(RemovalPolicy.evaluate(facts(main: true, statusUnavailable: true)) == .mainWorktree)
+        #expect(RemovalPolicy.evaluate(facts(main: true, modified: -1)) == .mainWorktree)
         #expect(RemovalPolicy.evaluate(facts(prunable: true, modified: 3, stash: 1, lock: "on usb drive")) == .missing)
         #expect(RemovalPolicy.evaluate(facts(prunable: true, statusUnavailable: true)) == .missing)
+        #expect(RemovalPolicy.evaluate(facts(prunable: true, ahead: -1)) == .missing)
     }
 
     @Test func noStatusBlocksAndNothingElseIsLookedAt() {
@@ -154,6 +156,17 @@ private func facts(
     @Test(arguments: reviewStates)
     func unpushedCommitsBlockWhateverTheRequest(review: ReviewState) {
         #expect(RemovalPolicy.evaluate(facts(review: review, ahead: 3)) == .blocked([.unpushed(3)]))
+    }
+
+    @Test func aSingleCommitIsEnoughToBlock() {
+        // The commonest case that the gate is for: one commit that is not pushed, or that is on no remote branch.
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, ahead: 1)) == .blocked([.unpushed(1)]))
+        #expect(RemovalPolicy.evaluate(facts(review: .open, ahead: 1)) == .blocked([.unpushed(1)]))
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .none, upstream: nil, notOnRemote: 1)) == .blocked([.notOnRemote(1)]))
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .closed, upstreamGone: true, notOnRemote: 1))
+                == .blocked([.notOnRemote(1)]))
     }
 
     @Test func anUpstreamThatIsThereDecidesByAheadAlone() {
@@ -293,29 +306,88 @@ private func facts(
 
     // MARK: Every input has an answer
 
-    @Test func countsOfAnySizeAreTakenForWhatTheyAre() {
+    // No reading of git gives a count below zero, so one is an unknown, and an unknown blocks.
+
+    @Test(arguments: [-1, Int.min])
+    func aCountBelowZeroInTheStatusIsAStatusThatCannotBeRead(count: Int) {
+        let unreadable = RemovalEligibility.blocked([.statusUnavailable])
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, modified: count)) == unreadable)
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, untracked: count)) == unreadable)
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, ahead: count)) == unreadable)
+        // `ahead` is zero when there is no upstream that is there, and no less impossible below zero
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, upstream: nil, ahead: count)) == unreadable)
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, upstreamGone: true, ahead: count)) == unreadable)
+        // and nothing else of the worktree is looked at
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .open, modified: count, stash: 2, lock: "on usb drive")) == unreadable)
+    }
+
+    @Test(arguments: [-1, Int.min])
+    func aStashOrACountOfCommitsBelowZeroCannotBeVerified(count: Int) {
+        let cantVerify = RemovalEligibility.blocked([.cantVerify])
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, stash: count)) == cantVerify)
+        #expect(RemovalPolicy.evaluate(facts(review: .none, upstream: nil, notOnRemote: count)) == cantVerify)
+        // wherever it is, also where the table does not ask for the count: with an upstream that is there, or a merge
+        #expect(RemovalPolicy.evaluate(facts(review: .open, notOnRemote: count)) == cantVerify)
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, notOnRemote: count)) == cantVerify)
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, upstreamGone: true, notOnRemote: count)) == cantVerify)
+    }
+
+    @Test(arguments: [-1, Int.min])
+    func aNumberOfRunningGroupsBelowZeroIsTakenForSomethingRunning(count: Int) {
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, running: count)) == .ready(needsStopping: true))
+        #expect(RemovalPolicy.evaluate(facts(review: .open, running: count)) == .manual(needsStopping: true))
+    }
+
+    @Test func anUnknownIsLastAndOnceAndGivesWayToAReasonAboutTheCommits() {
+        // after the reasons of row 4, where `.cantVerify` always comes
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .merged, modified: 2, untracked: 1, stash: -1, lock: "on usb drive"))
+                == .blocked([.modified(2), .untracked(1), .lockedManually, .cantVerify]))
+        // once, however many things are unknown
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .none, stash: -1, upstream: nil, notOnRemote: -1))
+                == .blocked([.cantVerify]))
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .none, stash: -1, upstream: nil, notOnRemote: nil))
+                == .blocked([.cantVerify]))
+        // a reason about the commits that is known is the one that is given: at most one stands in that place
+        #expect(RemovalPolicy.evaluate(facts(review: .open, stash: -1, ahead: 2)) == .blocked([.unpushed(2)]))
+        #expect(RemovalPolicy.evaluate(facts(review: .open, ahead: 2, notOnRemote: -1)) == .blocked([.unpushed(2)]))
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .none, stash: -1, upstream: nil, notOnRemote: 3))
+                == .blocked([.notOnRemote(3)]))
+        #expect(
+            RemovalPolicy.evaluate(facts(review: .merged, stash: -1, upstreamGone: true, contained: false))
+                == .blocked([.commitsAfterMerge]))
+    }
+
+    @Test func hugeCountsAreCounted() {
         #expect(
             RemovalPolicy.evaluate(facts(modified: .max, untracked: .max, stash: .max))
                 == .blocked([.modified(.max), .untracked(.max), .stash(.max)]))
+        #expect(RemovalPolicy.evaluate(facts(review: .open, ahead: .max)) == .blocked([.unpushed(.max)]))
         #expect(
-            RemovalPolicy.evaluate(facts(review: .merged, modified: .min, untracked: -1, stash: -1, ahead: .min))
-                == .ready(needsStopping: false))
-        #expect(
-            RemovalPolicy.evaluate(facts(review: .open, upstream: nil, notOnRemote: .min, running: .min))
-                == .manual(needsStopping: false))
+            RemovalPolicy.evaluate(facts(review: .none, upstream: nil, notOnRemote: .max))
+                == .blocked([.notOnRemote(.max)]))
+        #expect(RemovalPolicy.evaluate(facts(review: .merged, running: .max)) == .ready(needsStopping: true))
     }
 
     // MARK: The point of the module
 
-    @Test func nothingUnsavedIsEverReadyAndEverythingUnsavedIsBlocked() {
+    /// Every combination of the facts that the table tells apart: each count below zero, none and one, the five states
+    /// of the upstream, and the facts that are not known. The answer is `.blocked` exactly when the spec says that
+    /// something is unsaved or unknown, and a worktree that is not blocked is `.ready` if its request is merged and
+    /// `.manual` if it is not: nothing that is unsaved or unknown is ever either of the two.
+    @Test func blockedExactlyWhenSomethingIsUnsavedOrUnknown() {
         var combos = [Combo()]
         combos = vary(combos, \.review, reviewStates)
-        combos = vary(combos, \.modified, [0, 3])
-        combos = vary(combos, \.untracked, [0, 2])
-        combos = vary(combos, \.stash, [0, 1])
+        combos = vary(combos, \.modified, [-1, 0, 1])
+        combos = vary(combos, \.untracked, [-1, 0, 1])
+        combos = vary(combos, \.stash, [-1, 0, 1])
         combos = vary(combos, \.lock, Combo.Lock.allCases)
         combos = vary(combos, \.tracking, Combo.Tracking.allCases)
-        combos = vary(combos, \.notOnRemote, [nil, 0, 5])
+        combos = vary(combos, \.notOnRemote, [nil, -1, 0, 1, 5])
         combos = vary(combos, \.contained, [nil, false, true])
 
         var broken: [String] = []
@@ -327,24 +399,24 @@ private func facts(
             switch result {
             case .ready:
                 ready += 1
-                if combo.review != .merged || combo.hasUnsavedWork || combo.headIsNotInTheMergedRequest {
-                    broken.append("ready, but not merged or something is unsaved: \(combo)")
+                if combo.review != .merged || combo.blocks {
+                    broken.append("ready, but not merged, or something is unsaved or unknown: \(combo)")
                 }
             case .manual:
                 manual += 1
-                if combo.review == .merged {
-                    broken.append("manual, but merged: \(combo)")
+                if combo.review == .merged || combo.blocks {
+                    broken.append("manual, but merged, or something is unsaved or unknown: \(combo)")
                 }
             case .blocked(let reasons):
                 blocked += 1
+                if !combo.blocks {
+                    broken.append("blocked, but nothing is unsaved or unknown: \(combo)")
+                }
                 if reasons.isEmpty || !reasons.map(\.position).isStrictlyIncreasing {
                     broken.append("blocked with \(reasons), which is empty or out of order: \(combo)")
                 }
             case .mainWorktree, .missing:
                 broken.append("neither main nor missing, but \(result): \(combo)")
-            }
-            if combo.hasUnsavedWork, !result.isBlocked {
-                broken.append("unsaved work, but \(result): \(combo)")
             }
         }
 
@@ -403,26 +475,42 @@ private struct Combo {
     }
 
     enum Tracking: CaseIterable {
-        case noUpstream, inSync, ahead, gone
+        // `aheadBelowZero` is an upstream that is there, with a count of commits ahead that no reading gives
+        case noUpstream, inSync, ahead, gone, aheadBelowZero
 
         var upstream: String? { self == .noUpstream ? nil : "origin/x" }
         var isGone: Bool { self == .gone }
-        var aheadBy: Int { self == .ahead ? 4 : 0 }
-        var isThere: Bool { self == .inSync || self == .ahead }
+        var isThere: Bool { self != .noUpstream && self != .gone }
+        var aheadBy: Int {
+            switch self {
+            case .ahead: 1
+            case .aheadBelowZero: -1
+            case .noUpstream, .inSync, .gone: 0
+            }
+        }
     }
 
     /// What the spec calls unsaved work, written from the spec and not from the table of the policy: changes, stash, a
-    /// lock that no process holds, commits ahead of an upstream that is there, and, with no such upstream and no
-    /// merge, commits on no remote branch.
+    /// lock that names no process, commits ahead of an upstream that is there, and, with no such upstream, the commits
+    /// that a merge did not take (a merged request) or that are on no remote branch (any other).
     var hasUnsavedWork: Bool {
         modified > 0 || untracked > 0 || stash > 0 || lock == .byHand
             || (tracking.isThere && tracking.aheadBy > 0)
             || (!tracking.isThere && review != .merged && (notOnRemote ?? 0) > 0)
+            || (!tracking.isThere && review == .merged && contained == false)
     }
 
-    /// The head of the request does not hold HEAD, or nobody knows. Only a branch that has no upstream that is there is
-    /// asked this: for a merged request it is the question, and a branch can be ready only if it passes.
-    var headIsNotInTheMergedRequest: Bool { !tracking.isThere && contained != true }
+    /// What cannot be told: a count below zero, wherever it is, and, for a branch with no upstream that is there, the
+    /// fact that the table asks for and that was not given: the head of the request if that is merged, the number of
+    /// commits on no remote branch if it is not.
+    var hasUnknownFact: Bool {
+        modified < 0 || untracked < 0 || stash < 0 || tracking.aheadBy < 0 || (notOnRemote ?? 0) < 0
+            || (!tracking.isThere && review != .merged && notOnRemote == nil)
+            || (!tracking.isThere && review == .merged && contained == nil)
+    }
+
+    /// Something is unsaved or unknown, so the answer has to be `.blocked`, and is nothing else.
+    var blocks: Bool { hasUnsavedWork || hasUnknownFact }
 }
 
 private func facts(for combo: Combo) -> RemovalFacts {
@@ -440,12 +528,6 @@ private func vary<Value>(_ combos: [Combo], _ key: WritableKeyPath<Combo, Value>
             next[keyPath: key] = value
             return next
         }
-    }
-}
-
-extension RemovalEligibility {
-    fileprivate var isBlocked: Bool {
-        if case .blocked = self { true } else { false }
     }
 }
 
