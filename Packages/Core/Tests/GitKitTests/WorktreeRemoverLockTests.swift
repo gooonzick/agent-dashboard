@@ -25,6 +25,7 @@ extension WorktreeRemoverTests {
             "kept for the release",
             "pid is 4242",  // no number after the word
             "pid 0",  // 0 would stand for a whole group of processes
+            "keep until pid 1234 finishes",  // typed by hand: it names a process, but no session of Claude Code
         ])
         func aLockThatNamesNoOwnerIsNeverUnlocked(reason: String) async throws {
             let scene = try await sandbox.makeRemovalScene()
@@ -42,7 +43,7 @@ extension WorktreeRemoverTests {
                 return
             }
             #expect(!message.isEmpty)
-            #expect(runner.calls.map { $0.subcommand.first } == ["worktree"])  // the removal was tried, not an unlock
+            #expect(runner.writes == [["worktree", "remove", "--", scene.path]])  // the removal was tried: no unlock
             #expect(try await scene.worktree().lock != nil)
             #expect(scene.folderExists)
         }
@@ -61,7 +62,7 @@ extension WorktreeRemoverTests {
             }
 
             #expect(error == .processStillRunning(pid))
-            #expect(runner.calls.isEmpty)
+            #expect(runner.writes.isEmpty)
             #expect(try await scene.worktree().lock?.ownerPID == pid)
             #expect(scene.folderExists)
             #expect(ProcessSignaler().isAlive(pid))
@@ -108,7 +109,7 @@ extension WorktreeRemoverTests {
                 try await sandbox.makeRemover(through: runner).remove(request, recheck: stillReady)
             }
 
-            #expect(runner.calls.map(\.subcommand) == [["worktree", "unlock", "--", scene.path]])  // nothing after it
+            #expect(runner.writes == [["worktree", "unlock", "--", scene.path]])  // and nothing after it
             #expect(scene.folderExists)
         }
     }

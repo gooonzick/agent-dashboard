@@ -9,6 +9,10 @@ import Shell
 /// as the default branch, a made up author, no prompts, and none of the `GIT_DIR` variables that a hook of an outer
 /// repository leaves behind. A test then gives the same result whatever is in `~/.gitconfig`, and whatever runs it.
 ///
+/// Git does not look for a repository above the folder that holds the sandbox. A folder of the sandbox that is no
+/// repository is therefore none for git, even if the temporary folder of the machine is inside one, and no test of
+/// git can end up running on a repository that is not its own.
+///
 /// Keep the sandbox for as long as the test goes on: the folder is removed with it. A test suite that holds it in a
 /// property does that.
 public struct GitSandbox: Sendable {
@@ -144,8 +148,22 @@ struct IsolatedGitRunner: CommandRunning {
             "GIT_COMMITTER_NAME=Test Committer",
             "GIT_COMMITTER_EMAIL=committer@example.com",
             "GIT_TERMINAL_PROMPT=0",
+            // Never a repository that the sandbox lives in: git looks for one in the folders above the one it runs in,
+            // and the temporary folder of a machine can be inside a repository, which a test then would run git on.
+            "GIT_CEILING_DIRECTORIES=\(Self.folderHolding(scratch))",
         ]
         self.settings = settings + environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+    }
+
+    /// The folder that holds `scratch`, as the file system reports it. Git is run in the physical path of a folder
+    /// (`/private/var/...`, where the temporary directory says `/var/...`), and compares what it is given with that.
+    private static func folderHolding(_ scratch: URL) -> String {
+        var path = scratch.path
+        if let resolved = realpath(path, nil) {
+            defer { free(resolved) }
+            path = String(cString: resolved)
+        }
+        return URL(filePath: path).deletingLastPathComponent().path
     }
 
     func run(_ tool: String, _ args: [String], in directory: URL?, timeout: Duration) async throws -> CommandResult {

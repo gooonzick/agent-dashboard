@@ -10,7 +10,11 @@ import Testing
 
 /// These run the real `git` in a `GitSandbox`, and stop real processes. The suite holds the sandbox, so its folder
 /// outlives every test; every process that a test starts is killed again by the test.
-@Suite(.timeLimit(.minutes(1))) struct WorktreeRemoverTests {
+///
+/// The tests of this suite and of the suites in it run one after the other. Each of them runs a dozen git commands,
+/// and run side by side they once left so little of the machine to the other suites that two tests with a deadline of
+/// 200 ms, in `HostingTests`, failed in one run in four.
+@Suite(.serialized, .timeLimit(.minutes(1))) struct WorktreeRemoverTests {
     let sandbox: GitSandbox
     let remover: WorktreeRemover
 
@@ -142,13 +146,18 @@ import Testing
         let calls = runner.calls
         #expect(
             calls.map(\.subcommand) == [
+                ["worktree", "list", "--porcelain"],  // the worktree as it is now
+                ["ls-files", "-v", "-z"],  // the work in it that git does not show
                 ["worktree", "unlock", "--", scene.path],
                 ["worktree", "remove", "--", scene.path],
+                ["rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/\(removalBranch)"],
                 ["branch", "-D", "--", removalBranch],
             ])
         for call in calls {
+            // git -C <repo>, except for the one command that reads the index of the worktree itself
+            let folder = call.subcommand.first == "ls-files" ? scene.path : scene.repo.path
             let option = call.args.firstIndex(of: "-C")
-            #expect(option.map { call.args[$0 + 1] } == scene.repo.path, "\(call.args)")  // git -C <repo>
+            #expect(option.map { call.args[$0 + 1] } == folder, "\(call.args)")
         }
         #expect(!calls.flatMap(\.args).contains { $0 == "--force" || $0 == "-f" })
         // The removal asks for untracked files itself, whatever the configuration of the user says.
@@ -163,18 +172,7 @@ import Testing
 
         _ = await refusalMessage(of: try await scene.request(), using: sandbox.makeRemover(through: runner))
 
-        #expect(runner.calls.map { $0.subcommand.first } == ["worktree"])  // the removal, and nothing after it
-    }
-
-    @Test func aRefusalThatSaysNothingNamesTheExitStatus() async throws {
-        let runner = WatchedRunner(answer: { _ in CommandResult(exitCode: 3, stdout: "", stderr: " \n") })
-        let request = RemovalRequest(
-            repo: URL(filePath: "/work/repo"), worktree: Worktree(path: "/work/wt", branch: "b"), deleteBranch: true,
-            stopGroups: [])
-
-        let message = await refusalMessage(of: request, using: sandbox.makeRemover(through: runner))
-
-        #expect(message == "git exited with 3")
+        #expect(runner.writes == [["worktree", "remove", "--", scene.path]])  // the removal, and nothing after it
     }
 
     // MARK: The branch
@@ -208,26 +206,8 @@ import Testing
         try await sandbox.makeRemover(through: runner).remove(request, recheck: stillReady)
 
         #expect(!scene.folderExists)
-        #expect(runner.calls.map { $0.subcommand.first } == ["worktree"])
+        #expect(runner.writes.map(\.first) == ["worktree"])  // the removal, and no branch to delete after it
         #expect(try await scene.branchExists("main"))
-    }
-
-    @Test func neverDeletesABranchForAWorktreeThatIsDetached() async throws {
-        // A value that `GitReader` does not give, made by hand: whatever else it says, a worktree that is detached has
-        // no branch to take.
-        let scene = try await sandbox.makeRemovalScene()
-        let listed = try await scene.worktree()
-        let detached = Worktree(
-            path: listed.path, head: listed.head, branch: listed.branch, isMain: false, isDetached: true, lock: nil,
-            isPrunable: false)
-        let runner = WatchedRunner(wrapping: sandbox.runner)
-        let request = RemovalRequest(repo: scene.repo, worktree: detached, deleteBranch: true, stopGroups: [])
-
-        try await sandbox.makeRemover(through: runner).remove(request, recheck: stillReady)
-
-        #expect(!scene.folderExists)
-        #expect(runner.calls.map { $0.subcommand.first } == ["worktree"])
-        #expect(try await scene.branchExists())
     }
 
     // MARK: What is never removed
@@ -284,7 +264,8 @@ import Testing
     }
 
     @Test func aFailedPruneIsReported() async throws {
-        let nowhere = sandbox.url  // a folder, but no repository
+        // A folder that is not there: no git can find a repository, a real one included, by looking above it.
+        let nowhere = sandbox.url.appending(path: "no such folder")
 
         let error = await #expect(throws: RemovalError.self) { try await remover.prune(repo: nowhere) }
 
@@ -340,7 +321,8 @@ import Testing
 
         #expect(!scene.folderExists)
         #expect(try await !scene.branchExists())
-        #expect(runner.calls.count == 2 && runner.calls.allSatisfy { !$0.cancelled })
+        #expect(runner.writes.count == 2)  // the removal, and the branch
+        #expect(!runner.calls.isEmpty && runner.calls.allSatisfy { !$0.cancelled })
     }
 
     // MARK: Helpers

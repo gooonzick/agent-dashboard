@@ -1,5 +1,4 @@
 import CoreModels
-import Darwin
 import Foundation
 import GitKit
 import ProcessKit
@@ -21,7 +20,7 @@ let stillReady: @Sendable () async -> RemovalEligibility = { .ready(needsStoppin
 
 // MARK: A repository to remove from
 
-/// A repository with a remote, in which `tmp` is ignored, and a clean worktree of it in `worktrees/feature wt`.
+/// A repository in which `tmp` is ignored, and a clean worktree of it in `worktrees/feature wt`.
 struct RemovalScene: Sendable {
     enum Failure: Error {
         case notListed(String)
@@ -67,18 +66,22 @@ struct RemovalScene: Sendable {
 }
 
 extension GitSandbox {
+    /// A repository with one commit on `main`, and a worktree of it. It has no remote: the removal reads nothing from
+    /// one, and four git commands make it where ten would. The tests of this suite make a few dozen of them, and git
+    /// that runs in that many places at once leaves little of the machine to the tests of other suites that have a
+    /// deadline.
     func makeRemovalScene(branch: String? = removalBranch) async throws -> RemovalScene {
-        let (repo, _) = try await makeRepository()
+        let repo = try await initRepository(named: "repo")
+        try write("# Project\n", to: "README.md", in: repo)
         try write("tmp\n", to: ".gitignore", in: repo)
-        try await git(["add", ".gitignore"], in: repo)
-        try await git(["commit", "--message", "Ignore tmp"], in: repo)
-        try await git(["push"], in: repo)
+        try await git(["add", "README.md", ".gitignore"], in: repo)
+        try await git(["commit", "--message", "Initial commit"], in: repo)
         let folder: URL
         if let branch {
-            folder = try await addWorktree(of: repo, branch: branch, in: "worktrees/feature wt")
+            folder = try await addWorktree(of: repo, branch: branch, in: "worktrees/feature wt", from: "main")
         } else {
             folder = url.appending(path: "worktrees/feature wt", directoryHint: .isDirectory)
-            try await git(["worktree", "add", "--detach", folder.path, "origin/main"], in: repo)
+            try await git(["worktree", "add", "--detach", folder.path, "main"], in: repo)
         }
         return RemovalScene(
             sandbox: self, repo: repo, folder: folder, path: canonicalPath + "/worktrees/feature wt", branch: branch)
@@ -108,8 +111,45 @@ final class Recorder<Element: Sendable>: Sendable {
     }
 }
 
-/// A runner that notes every command. It answers with `answer` if that gives a result, and otherwise lets `base` run
-/// it, or says that the command went well when there is no `base`.
+/// What a stand-in for git says about a repository that does not exist, for the tests that run no git: the worktrees
+/// that it lists, the commit that the branch of the worktree is at, and the files that it tracks. The folder of the
+/// worktree is a real one (`PretendScene`): the remover looks at the disk too.
+struct PretendRepository: Sendable {
+    var worktrees: [Worktree]
+    /// What `git rev-parse` prints for the branch, or `nil` if there is no such branch: it then exits with 1.
+    var tip: String?
+    /// What `git ls-files -v -z` prints.
+    var tracked = ""
+
+    /// What `git worktree list --porcelain` prints.
+    var listing: String {
+        worktrees.map { worktree in
+            var lines = ["worktree \(worktree.path)", "HEAD \(worktree.head ?? String(repeating: "0", count: 40))"]
+            if let branch = worktree.branch { lines.append("branch refs/heads/\(branch)") }
+            if worktree.isDetached { lines.append("detached") }
+            if let lock = worktree.lock { lines.append(lock.reason.isEmpty ? "locked" : "locked \(lock.reason)") }
+            if worktree.isPrunable { lines.append("prunable gitdir file points to non-existent location") }
+            return lines.joined(separator: "\n") + "\n"
+        }.joined(separator: "\n")
+    }
+
+    func answer(to subcommand: [String]) -> CommandResult {
+        switch subcommand.first {
+        case "worktree" where subcommand.dropFirst().first == "list":
+            return CommandResult(exitCode: 0, stdout: listing, stderr: "")
+        case "ls-files":
+            return CommandResult(exitCode: 0, stdout: tracked, stderr: "")
+        case "rev-parse":
+            return tip.map { CommandResult(exitCode: 0, stdout: $0 + "\n", stderr: "") }
+                ?? CommandResult(exitCode: 1, stdout: "", stderr: "")
+        default:
+            return CommandResult(exitCode: 0, stdout: "", stderr: "")
+        }
+    }
+}
+
+/// A runner that notes every command. It answers with `answer` if that gives a result. Otherwise `base` runs it. With
+/// no `base` it is a stand-in for git: it answers as `pretending` does, or says that the command went well.
 final class WatchedRunner: CommandRunning {
     struct Call: Sendable {
         let args: [String]
@@ -117,37 +157,85 @@ final class WatchedRunner: CommandRunning {
         let cancelled: Bool
 
         /// What was asked of git, without the options that every command gets: `["worktree", "remove", "--", "/x"]`.
-        var subcommand: [String] {
-            guard let option = args.firstIndex(of: "-C") else { return args }
-            return Array(args.dropFirst(option + 2))
+        var subcommand: [String] { WatchedRunner.subcommand(of: args) }
+
+        /// Whether the command can change the repository: unlock, remove or prune a worktree, or delete a branch.
+        var isWrite: Bool {
+            switch subcommand.first {
+            case "branch": true
+            case "worktree": ["unlock", "remove", "prune"].contains(subcommand.dropFirst().first)
+            default: false
+            }
         }
     }
 
     private let base: (any CommandRunning)?
+    private let pretense: PretendRepository?
     private let answer: @Sendable ([String]) async -> CommandResult?
     private let log = Recorder<Call>()
 
     init(
-        wrapping base: (any CommandRunning)? = nil,
+        wrapping base: (any CommandRunning)? = nil, pretending pretense: PretendRepository? = nil,
         answer: @escaping @Sendable ([String]) async -> CommandResult? = { _ in nil }
     ) {
         self.base = base
+        self.pretense = pretense
         self.answer = answer
     }
 
     var calls: [Call] { log.all }
 
+    /// The subcommands of the calls that can change something, in order.
+    var writes: [[String]] { calls.filter(\.isWrite).map(\.subcommand) }
+
+    static func subcommand(of args: [String]) -> [String] {
+        guard let option = args.firstIndex(of: "-C") else { return args }
+        return Array(args.dropFirst(option + 2))
+    }
+
     func run(_ tool: String, _ args: [String], in directory: URL?, timeout: Duration) async throws -> CommandResult {
         log.append(Call(args: args, cancelled: Task.isCancelled))
         if let result = await answer(args) { return result }
-        guard let base else { return CommandResult(exitCode: 0, stdout: "", stderr: "") }
-        return try await base.run(tool, args, in: directory, timeout: timeout)
+        if let base { return try await base.run(tool, args, in: directory, timeout: timeout) }
+        return pretense?.answer(to: Self.subcommand(of: args)) ?? CommandResult(exitCode: 0, stdout: "", stderr: "")
     }
 
     func which(_ tool: String) -> URL? {
         base?.which(tool)
     }
 }
+
+/// A worktree that git is pretended to list: the folder is a real one, in which the remover finds it, and the branch is
+/// `b`, at `pretendHead`. The repository does not exist, so nothing here runs git.
+struct PretendScene {
+    let folder: TempDir
+    let worktree: Worktree
+    let runner: WatchedRunner
+
+    static let repo = URL(filePath: "/work/repo")
+
+    /// `listed` says how git lists the worktree if that is not how it is requested: it has changed since.
+    init(
+        lock: WorktreeLock? = nil, isDetached: Bool = false, tip: String? = pretendHead, tracked: String = "",
+        listed: (Worktree) -> Worktree = { $0 },
+        answer: @escaping @Sendable ([String]) async -> CommandResult? = { _ in nil }
+    ) throws {
+        folder = try TempDir(named: "My Projects")
+        worktree = Worktree(
+            path: folder.canonicalPath, head: pretendHead, branch: "b", isDetached: isDetached, lock: lock)
+        let main = Worktree(path: "/work/repo", head: pretendHead, branch: "main", isMain: true)
+        runner = WatchedRunner(
+            pretending: PretendRepository(worktrees: [main, listed(worktree)], tip: tip, tracked: tracked),
+            answer: answer)
+    }
+
+    func request(deleteBranch: Bool = false, stopping groups: [ProcessGroup] = []) -> RemovalRequest {
+        RemovalRequest(repo: Self.repo, worktree: worktree, deleteBranch: deleteBranch, stopGroups: groups)
+    }
+}
+
+/// The commit that the worktrees of the tests that run no git are at.
+let pretendHead = String(repeating: "a", count: 40)
 
 // MARK: Processes
 
@@ -255,17 +343,6 @@ final class ScriptedSampler: ProcessSampling {
             return count
         }
         return snapshots[min(call, snapshots.count - 1)]
-    }
-}
-
-extension Process {
-    /// Ends the process with `SIGKILL`, and does not wait for it. For a test that awaits while the process runs:
-    /// `kill()` of `TestSupport` waits with `waitUntilExit`, which in async tests that ran beside each other was seen
-    /// not to return in ten minutes, with each of three threads of Swift concurrency parked in it. The process is a
-    /// zombie for a moment, until Foundation collects it, which `ProcessSignaling.isAlive` does not count as alive.
-    func killWithoutWaiting() {
-        guard isRunning else { return }
-        Darwin.kill(processIdentifier, SIGKILL)
     }
 }
 

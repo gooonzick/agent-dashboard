@@ -27,19 +27,29 @@ public struct RemovalRequest: Sendable {
 /// says that nothing was changed means the disk: the processes that were asked to stop have stopped by then.
 public enum RemovalError: Error, Equatable {
     /// The worktree is not one that may be removed. It is the main one, or its folder is gone, which is for `prune`: a
-    /// request for either is answered at once, with `.mainWorktree` or `.missing`. Or the recheck, which looks at its
-    /// state once more after the processes are stopped, did not answer `.ready` or `.manual`. Nothing was changed.
+    /// request for either is answered at once, with `.mainWorktree` or `.missing`, and so is one whose folder turns out
+    /// to be gone when the removal looks at it again. Or the recheck, which looks at its state once more after the
+    /// processes are stopped, did not answer `.ready` or `.manual` with nothing left to stop. Nothing was changed.
     case stateChanged(RemovalEligibility)
-    /// Git refused, or failed, to do what it was asked: unlock or remove the worktree, or prune. What it said, for
-    /// people to read. The worktree is as it was, unless git failed halfway through deleting its folder, which it then
-    /// says. A worktree that was unlocked first stays unlocked: its lock was stale.
+    /// Git refused, or failed, to do what it was asked: list the worktrees, unlock or remove the worktree, or prune.
+    /// What it said, for people to read. The worktree is as it was, unless git failed halfway through deleting its
+    /// folder, which it then says. A worktree that was unlocked first stays unlocked: its lock was stale.
     case gitRefused(String)
     /// The process with this id runs, and holds up the removal: it could not be stopped, or it holds the lock of the
     /// worktree and is not among those that were to be stopped. Nothing was changed.
     case processStillRunning(Int32)
-    /// The worktree is removed, but git did not delete its branch. What it said. The removal is not undone: the folder
-    /// is gone, and the branch is still there.
+    /// The worktree is removed, but its branch was not deleted: git said no (what it said), or the branch is not at the
+    /// commit that the worktree had, because it has moved on since or is not to be found (what is wrong). The removal
+    /// is not undone: the folder is gone, and the branch is still there.
     case branchNotDeleted(String)
+    /// The worktree is not the one that the request was made for: since then it has been locked or unlocked, or the
+    /// lock has been replaced, it is on another branch or commit, or git does not list it any more. Nothing was
+    /// changed.
+    case worktreeChanged
+    /// The folder holds work that git does not show, and that `git worktree remove` deletes without a word: another
+    /// worktree inside it, or tracked files that git is told not to look at (`assume-unchanged`, `skip-worktree`). A
+    /// short reason, for people to read. Nothing was changed.
+    case hiddenWork(String)
 }
 
 /// Removes worktrees, and stops what runs in them first.
@@ -53,12 +63,21 @@ public protocol WorktreeRemoving: Sendable {
     ///
     /// 1. The processes of `request.stopGroups` are stopped.
     /// 2. `recheck` is called, just once, and must read the state of the worktree anew. If it answers anything but
-    ///    `.ready` or `.manual`, the removal ends with `RemovalError.stateChanged` and nothing is changed. The
-    ///    processes of step 1 may have been stopped by then: that cannot be undone.
-    /// 3. A lock that names its owner is taken off, if the owner is no more. A lock that names none is never taken off:
+    ///    `.ready` or `.manual`, or answers that something still runs (`needsStopping`), the removal ends with
+    ///    `RemovalError.stateChanged` and nothing is changed. The processes of step 1 may have been stopped by then:
+    ///    that cannot be undone.
+    /// 3. The worktree is looked at once more, as git lists it and as it is on the disk: it has to be the one that the
+    ///    request was made for. Its folder is there, and its lock, branch, detachment and commit are those of the
+    ///    request. A folder that is gone is `stateChanged(.missing)`, and anything else that is different is
+    ///    `worktreeChanged`: nothing is unlocked or deleted on the word of a request that is minutes old.
+    /// 4. The folder is looked at for work that git does not show: another worktree inside it, and files that git is
+    ///    told not to look at. That is `hiddenWork`, for `git worktree remove` would delete it.
+    /// 5. A lock that names its owner is taken off, if the owner is no more. A lock that names none is never taken off:
     ///    git refuses a locked worktree, and the removal ends with `RemovalError.gitRefused`.
-    /// 4. The worktree is removed by git.
-    /// 5. If `request.deleteBranch` is set and the worktree has a branch, the branch is deleted.
+    /// 6. The worktree is removed by git.
+    /// 7. If `request.deleteBranch` is set and the worktree has a branch, the branch is deleted, provided that it is
+    ///    still at the commit that the worktree had: deleting a branch takes its reflog with it. Otherwise the removal
+    ///    ends with `RemovalError.branchNotDeleted`, with the folder gone.
     ///
     /// The main worktree, and a worktree whose folder is gone, are not removed: the request is refused before step 1,
     /// as `RemovalError.stateChanged`, and nothing is stopped for it.
@@ -88,7 +107,7 @@ public struct WorktreeRemover: WorktreeRemoving {
     private static let killGrace: Duration = .seconds(2)
     /// How often the processes that were told to stop are looked at.
     private static let pollInterval: Duration = .milliseconds(50)
-    /// Unlocking a worktree and deleting a branch take no time.
+    /// Reading from git, unlocking a worktree and deleting a branch take no time.
     private static let gitTimeout: Duration = .seconds(60)
     /// Deleting a folder does: a worktree can hold a few hundred thousand files, `node_modules` and build products. A
     /// command that runs out of time is asked to stop, and git that is stopped halfway through leaves half of the
@@ -120,11 +139,13 @@ public struct WorktreeRemover: WorktreeRemoving {
 
         try await stop(request.stopGroups)
 
+        // Once the processes are stopped nothing is left to stop. A recheck that still sees something run, or run
+        // again, is not looking at the worktree that was to be removed.
         let eligibility = await recheck()
         switch eligibility {
-        case .ready, .manual:
+        case .ready(needsStopping: false), .manual(needsStopping: false):
             break
-        case .mainWorktree, .missing, .blocked:
+        case .ready, .manual, .mainWorktree, .missing, .blocked:
             throw RemovalError.stateChanged(eligibility)
         }
         // The last moment to give up. A caller who has gone does not get a folder deleted.
@@ -142,15 +163,25 @@ public struct WorktreeRemover: WorktreeRemoving {
 
     // MARK: Deleting
 
-    /// Steps 3 to 5 of `remove`.
+    /// Steps 3 to 7 of `remove`.
     private func delete(_ request: RemovalRequest) async throws {
         let repo = request.repo
-        let path = request.worktree.path
+        let worktree = request.worktree
+        let path = worktree.path
+
+        // The request is as old as the list that it was made from, and what is done now is done to the worktree as it
+        // is now: with another lock, branch or commit, or without a folder, it is not what was asked to be removed.
+        let listing = try await currentWorktrees(of: repo)
+        try Self.verify(worktree, in: listing)
 
         // The lock of a session that has ended is stale, and is the only lock that is taken off. If its owner still
         // runs, it was not stopped, and the lock is what it says it is.
-        if let owner = request.worktree.lock?.ownerPID {
-            guard !signaler.isAlive(owner) else { throw RemovalError.processStillRunning(owner) }
+        let owner = worktree.lock?.ownerPID
+        if let owner, signaler.isAlive(owner) { throw RemovalError.processStillRunning(owner) }
+
+        try await refuseHiddenWork(in: worktree, among: listing)
+
+        if owner != nil {
             let unlock = try await git(["worktree", "unlock", "--", path], in: repo)
             guard unlock.exitCode == 0 else { throw RemovalError.gitRefused(unlock.message) }
         }
@@ -163,18 +194,94 @@ public struct WorktreeRemover: WorktreeRemoving {
             timeout: Self.removalTimeout)
         guard removal.exitCode == 0 else { throw RemovalError.gitRefused(removal.message) }
 
-        guard request.deleteBranch, !request.worktree.isDetached, let branch = request.worktree.branch else { return }
+        guard request.deleteBranch, !worktree.isDetached, let branch = worktree.branch else { return }
+        try await requireBranch(branch, at: worktree.head, in: repo)
         let deletion = try await git(["branch", "-D", "--", branch], in: repo)
         guard deletion.exitCode == 0 else { throw RemovalError.branchNotDeleted(deletion.message) }
     }
 
-    /// Runs `git -C <repo> <arguments>` and returns the result, whatever the exit code. `settings` are for this one
-    /// command (`-c`). The folder is passed with `-C` and not as the one that git is started in, so that a folder that
-    /// is gone is a failure of git like any other, and not an error of the launch.
+    /// The worktrees of the repository as git lists them now.
+    private func currentWorktrees(of repo: URL) async throws -> [Worktree] {
+        do {
+            return try await GitReader(runner: runner).worktrees(repo: repo)
+        } catch let error as GitError {
+            throw RemovalError.gitRefused(error.errorDescription ?? "git could not list the worktrees")
+        }
+    }
+
+    /// Checks that `snapshot` is what `listing` says of the worktree now, and that its folder is there.
+    ///
+    /// Git says `prunable` of a worktree whose folder is gone, but not of one that is locked: the disk is looked at
+    /// too.
+    private static func verify(_ snapshot: Worktree, in listing: [Worktree]) throws {
+        guard let current = listing.first(where: { $0.path == snapshot.path }) else {
+            throw RemovalError.worktreeChanged
+        }
+        guard !current.isMain else { throw RemovalError.stateChanged(.mainWorktree) }
+        var isDirectory: ObjCBool = false
+        let folderIsThere =
+            FileManager.default.fileExists(atPath: current.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        guard !current.isPrunable, folderIsThere else { throw RemovalError.stateChanged(.missing) }
+        guard
+            current.lock == snapshot.lock, current.branch == snapshot.branch,
+            current.isDetached == snapshot.isDetached, current.head == snapshot.head
+        else { throw RemovalError.worktreeChanged }
+    }
+
+    /// Refuses a folder that holds work that `git worktree remove` would delete, though it does not show it. Git
+    /// shows nothing of another worktree that lies in a folder that is ignored, as a session of Claude Code makes in
+    /// `.claude/worktrees/`, and nothing of a change to a file that it is told not to look at.
+    ///
+    /// Of the files that are told not to be looked at, those marked `assume-unchanged` all count: their tag in
+    /// `git ls-files -v` is a lowercase letter, and an edit to one is invisible. Those marked `skip-worktree` (tag `S`)
+    /// count if the file is on the disk, for then it may be edited. A sparse checkout leaves such files out, and a file
+    /// that is not there holds nothing.
+    private func refuseHiddenWork(in worktree: Worktree, among listing: [Worktree]) async throws {
+        let prefix = worktree.path + "/"
+        if let inner = listing.first(where: { $0.path.hasPrefix(prefix) }) {
+            throw RemovalError.hiddenWork("another worktree is inside this one: \(inner.path.dropFirst(prefix.count))")
+        }
+
+        let tracked = try await git(["ls-files", "-v", "-z"], in: URL(filePath: worktree.path))
+        guard tracked.exitCode == 0 else { throw RemovalError.gitRefused(tracked.message) }
+        let hidden = tracked.stdout.split(separator: "\0").compactMap { entry -> String? in
+            guard let tag = entry.first else { return nil }
+            let file = String(entry.dropFirst(2))
+            if tag.isLowercase { return file }
+            let onDisk = (try? FileManager.default.attributesOfItem(atPath: prefix + file)) != nil
+            return tag == "S" && onDisk ? file : nil
+        }
+        if let first = hidden.first {
+            let others = hidden.count > 1 ? " and \(hidden.count - 1) more" : ""
+            throw RemovalError.hiddenWork("git is told not to look for changes in \(first)\(others)")
+        }
+    }
+
+    /// Checks that `branch` is still at `commit`, the commit that the worktree had. `git branch -D` takes the reflog of
+    /// the branch with it: if the branch has moved on since the request, what it has gained cannot be recovered.
+    private func requireBranch(_ branch: String, at commit: String?, in repo: URL) async throws {
+        let result = try await git(
+            ["rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/\(branch)"], in: repo)
+        guard result.exitCode == 0 else {
+            throw RemovalError.branchNotDeleted("the branch '\(branch)' could not be read: \(result.message)")
+        }
+        let tip = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard tip == commit else {
+            let was = commit.map { String($0.prefix(7)) } ?? "no commit"
+            throw RemovalError.branchNotDeleted(
+                "the branch '\(branch)' is at \(tip.prefix(7)) now, not at \(was), the commit that the worktree had: "
+                    + "it was kept")
+        }
+    }
+
+    /// Runs `git -C <directory> <arguments>` and returns the result, whatever the exit code. `settings` are for this
+    /// one command (`-c`). The folder is passed with `-C` and not as the one that git is started in, so that a folder
+    /// that is gone is a failure of git like any other, and not an error of the launch.
     private func git(
-        _ arguments: [String], in repo: URL, settings: [String] = [], timeout: Duration = WorktreeRemover.gitTimeout
+        _ arguments: [String], in directory: URL, settings: [String] = [],
+        timeout: Duration = WorktreeRemover.gitTimeout
     ) async throws -> CommandResult {
-        let options = settings.flatMap { ["-c", $0] } + ["-C", repo.path]
+        let options = settings.flatMap { ["-c", $0] } + ["-C", directory.path]
         return try await runner.run("git", options + arguments, in: nil, timeout: timeout)
     }
 
@@ -223,22 +330,19 @@ public struct WorktreeRemover: WorktreeRemoving {
         }
     }
 
-    /// The processes of `groups` in the order in which they are stopped: group after group, and in each one of them
-    /// every process before the one that started it. A process that is listed twice is stopped once.
+    /// The processes of all the groups in the order in which they are stopped: one tree of the `ppid`s among all of
+    /// them, deepest first, so that every process comes before the one that started it, whichever group each is in. A
+    /// process that is listed twice is stopped once.
+    ///
+    /// Not in the order of the ids: they wrap around, and a child can have a lower one than its parent. Not group after
+    /// group either: a server that leads a group of its own is the child of a shell that leads another. Not leader
+    /// last: the leader of a session of the Claude app was started by a helper that is a member. Of two processes at
+    /// the same depth, the one with the lower id is first.
     private static func stopOrder(of groups: [ProcessGroup]) -> [ProcessRecord] {
         var seen = Set<Identity>()
-        return groups.flatMap(bottomUp).filter { seen.insert(Identity($0)).inserted }
-    }
-
-    /// The leader and the members of `group`, deepest first in the tree of the `ppid`s among them.
-    ///
-    /// Not in the order of the ids: they wrap around, and a child can have a lower one than its parent. Not leader last
-    /// either: the leader of a session of the Claude app was started by a helper that is a member. Of two processes at
-    /// the same depth, the one with the lower id is first.
-    private static func bottomUp(_ group: ProcessGroup) -> [ProcessRecord] {
-        let records = [group.leader] + group.members
+        let records = groups.flatMap { [$0.leader] + $0.members }.filter { seen.insert(Identity($0)).inserted }
         let byPID = Dictionary(records.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        /// How many parents of `record` are in the group. A chain longer than the group is a loop of parents, which
+        /// How many parents of `record` are among the processes. A chain longer than that is a loop of parents, which
         /// samples that were taken a moment apart can make: it is cut short.
         func depth(of record: ProcessRecord) -> Int {
             var depth = 0

@@ -9,10 +9,14 @@ import Testing
 
 extension WorktreeRemoverTests {
     /// How the processes of a worktree are stopped, with processes that exist only in the test: the order, the
-    /// timeout and who is signalled are exact. Nothing here runs git for real, so what the runner was asked is all
-    /// there is to say about the folder.
+    /// timeout and who is signalled are exact. Nothing here runs git for real: what the stand-in for git was asked to
+    /// change is all there is to say about the folder.
     @Suite(.timeLimit(.minutes(1))) struct Stopping {
-        private let runner = WatchedRunner()
+        private let scene: PretendScene
+
+        init() throws {
+            scene = try PretendScene()
+        }
 
         // MARK: Order
 
@@ -46,15 +50,29 @@ extension WorktreeRemoverTests {
             #expect(signaler.signals == [[30, SIGTERM], [20, SIGTERM], [10, SIGTERM]])
         }
 
-        @Test func stopsEveryGroupInTheOrderGivenAndNothingTwice() async throws {
+        @Test func stopsAProcessBeforeTheOneThatStartedItWhicheverGroupEachIsIn() async throws {
+            // A shell, and a server that the shell started and that leads a group of its own. In one tree the server is
+            // first. Group after group, or the ids, would put the shell first: it is 100 and in the first group.
+            let shell = processRecord(100, name: "zsh")
+            let server = processRecord(300, parent: 100)
+            let signaler = ScriptedSignaler(alive: [100, 300])
+
+            try await remove(
+                stopping: [processGroup(shell), processGroup(server)], with: signaler,
+                seeing: ScriptedSampler(always: [shell, server]))
+
+            #expect(signaler.signals == [[300, SIGTERM], [100, SIGTERM]])
+        }
+
+        @Test func stopsAllTheGroupsAsOneTreeAndNothingTwice() async throws {
             let shell = processRecord(10, name: "zsh")
             let server = processRecord(11, parent: 10)
             let daemon = processRecord(20)
             let signaler = ScriptedSignaler(alive: [10, 11, 20])
 
-            // The second group lists a process of the first one again.
+            // The groups are not in the order of the tree, and the second lists a process of the first one again.
             try await remove(
-                stopping: [processGroup(shell, server), processGroup(daemon, server)], with: signaler,
+                stopping: [processGroup(daemon, server), processGroup(shell, server)], with: signaler,
                 seeing: ScriptedSampler(always: [shell, server, daemon]))
 
             #expect(signaler.signals == [[11, SIGTERM], [10, SIGTERM], [20, SIGTERM]])
@@ -73,7 +91,7 @@ extension WorktreeRemoverTests {
 
             #expect(signaler.signals == [[20, SIGTERM], [30, SIGTERM], [10, SIGTERM], [30, SIGKILL]])
             #expect(sampler.sampleCount == 2)  // who is who is looked at before each of the two rounds
-            #expect(runner.calls.count == 1)  // and then the removal went on
+            #expect(scene.runner.writes.count == 1)  // and then the removal went on
         }
 
         @Test func waitsTheWholeTimeoutBeforeItKills() async throws {
@@ -126,7 +144,7 @@ extension WorktreeRemoverTests {
 
             #expect(error == .processStillRunning(20))  // the child is stopped first, so it is the first one named
             #expect(rechecks.all.isEmpty)
-            #expect(runner.calls.isEmpty)
+            #expect(scene.runner.calls.isEmpty)
         }
 
         // MARK: Who is signalled
@@ -155,7 +173,7 @@ extension WorktreeRemoverTests {
                 stopping: [processGroup(sampled)], with: signaler, seeing: ScriptedSampler(always: sampleNow))
 
             #expect(signaler.sent.isEmpty)
-            #expect(runner.calls.count == 1)  // it was taken for stopped: not waited for, and no reason to refuse
+            #expect(scene.runner.writes.count == 1)  // taken for stopped: not waited for, and no reason to refuse
         }
 
         @Test(arguments: [true, false])
@@ -185,10 +203,8 @@ extension WorktreeRemoverTests {
             let process = processRecord(10)
             let signaler = ScriptedSignaler(alive: [10])
             let sampler = ScriptedSampler(always: [process])
-            let remover = WorktreeRemover(runner: runner, signaler: signaler, sampler: sampler)
-            let request = RemovalRequest(
-                repo: URL(filePath: "/work/repo"), worktree: Worktree(path: "/work/wt", branch: "b"),
-                deleteBranch: false, stopGroups: [processGroup(process)])
+            let remover = WorktreeRemover(runner: scene.runner, signaler: signaler, sampler: sampler)
+            let request = scene.request(stopping: [processGroup(process)])
             let caller = Task {
                 withUnsafeCurrentTask { $0?.cancel() }  // before anything is done
                 try await remover.remove(request, recheck: stillReady)
@@ -196,7 +212,7 @@ extension WorktreeRemoverTests {
 
             await #expect(throws: CancellationError.self) { try await caller.value }
 
-            #expect(signaler.sent.isEmpty && sampler.sampleCount == 0 && runner.calls.isEmpty)
+            #expect(signaler.sent.isEmpty && sampler.sampleCount == 0 && scene.runner.calls.isEmpty)
         }
 
         @Test func looksAtNoProcessWhenThereIsNothingToStop() async throws {
@@ -211,19 +227,15 @@ extension WorktreeRemoverTests {
 
         // MARK: Helpers
 
-        /// Removes a worktree that is not there, through a runner that says yes to all, after the processes of `groups`
-        /// are stopped.
+        /// Removes the worktree of the scene, after the processes of `groups` are stopped.
         private func remove(
             stopping groups: [ProcessGroup], with signaler: ScriptedSignaler, seeing sampler: ScriptedSampler,
             stopTimeout: Duration = .milliseconds(200),
             recheck: @Sendable () async -> RemovalEligibility = stillReady
         ) async throws {
             let remover = WorktreeRemover(
-                runner: runner, signaler: signaler, sampler: sampler, stopTimeout: stopTimeout)
-            let request = RemovalRequest(
-                repo: URL(filePath: "/work/repo"), worktree: Worktree(path: "/work/wt", branch: "b"),
-                deleteBranch: false, stopGroups: groups)
-            try await remover.remove(request, recheck: recheck)
+                runner: scene.runner, signaler: signaler, sampler: sampler, stopTimeout: stopTimeout)
+            try await remover.remove(scene.request(stopping: groups), recheck: recheck)
         }
     }
 
@@ -262,13 +274,19 @@ extension WorktreeRemoverTests {
 
         @Test func killsAProcessThatIgnoresTerminationOnceTheTimeIsUp() async throws {
             let scene = try await sandbox.makeRemovalScene()
-            // The shell ignores `SIGTERM`, and says so by making a file, outside of the worktree, when it does.
+            // The shell ignores `SIGTERM`, says so by making a file outside of the worktree, and becomes `sleep`, which
+            // goes on ignoring it: an ignored signal stays ignored through `exec`. No child is left behind when it
+            // dies.
             let ready = sandbox.url.appending(path: "ignoring-term")
-            let script = "trap '' TERM; : > '\(ready.path)'; while :; do sleep 1; done"
+            let script = "trap '' TERM; : > '\(ready.path)'; exec /bin/sleep 30"
             let stubborn = try spawn("/bin/sh", ["-c", script], cwd: scene.folder)
             defer { stubborn.killWithoutWaiting() }
             let pid = stubborn.processIdentifier
-            #expect(await eventually(within: .seconds(10)) { FileManager.default.fileExists(atPath: ready.path) })
+            let isSleeping: @Sendable () -> Bool = {
+                FileManager.default.fileExists(atPath: ready.path)
+                    && ProcessSampler().sample().first { $0.pid == pid }?.name == "sleep"
+            }
+            #expect(await eventually(within: .seconds(10), isSleeping))
             let group = processGroup(try liveRecord(of: pid))
             let remover = sandbox.makeRemover(stopTimeout: .milliseconds(300))
             let request = try await scene.request(stopping: [group])
@@ -285,34 +303,39 @@ extension WorktreeRemoverTests {
 
     /// What the removal does with the answer of the recheck, and when it asks.
     @Suite(.timeLimit(.minutes(1))) struct Recheck {
-        private let runner = WatchedRunner()
+        private let scene: PretendScene
+
+        init() throws {
+            scene = try PretendScene()
+        }
 
         @Test(arguments: [
             RemovalEligibility.mainWorktree,
             .missing,
             .blocked([.modified(1)]),
             .blocked([.cantVerify, .lockedManually]),
+            .ready(needsStopping: true),  // something runs again, or still: it was to be stopped
+            .manual(needsStopping: true),
         ])
-        func refusesEveryAnswerButReadyAndManual(answer: RemovalEligibility) async throws {
+        func refusesEveryAnswerButReadyAndManualWithNothingRunning(answer: RemovalEligibility) async throws {
             let remover = makeRemover()
+            let request = scene.request(deleteBranch: true)
 
             await #expect(throws: RemovalError.stateChanged(answer)) {
-                try await remover.remove(makeRequest(), recheck: { answer })
+                try await remover.remove(request, recheck: { answer })
             }
 
-            #expect(runner.calls.isEmpty)  // not a single git command: nothing on the disk is changed
+            #expect(scene.runner.calls.isEmpty)  // not a single git command: nothing on the disk is changed
         }
 
         @Test(arguments: [
             RemovalEligibility.ready(needsStopping: false),
-            .ready(needsStopping: true),
             .manual(needsStopping: false),
-            .manual(needsStopping: true),
         ])
-        func carriesOnForReadyAndManualWhetherOrNotSomethingStillRuns(answer: RemovalEligibility) async throws {
-            try await makeRemover().remove(makeRequest(), recheck: { answer })
+        func carriesOnForReadyAndManualOnceNothingRuns(answer: RemovalEligibility) async throws {
+            try await makeRemover().remove(scene.request(deleteBranch: true), recheck: { answer })
 
-            #expect(runner.calls.map { $0.subcommand.first } == ["worktree", "branch"])
+            #expect(scene.runner.writes.map(\.first) == ["worktree", "branch"])
         }
 
         @Test func asksOnceAfterTheProcessesAreStoppedAndBeforeAnythingIsChanged() async throws {
@@ -324,26 +347,28 @@ extension WorktreeRemoverTests {
             let session = processRecord(4242, name: "claude")
             let signaler = ScriptedSignaler(alive: [4242])
             let lock = WorktreeLock(reason: "claude session x (pid 4242 start Fri Oct 30 14:39:21 2026)")
-            let runner = runner
-            let remover = makeRemover(signaler: signaler, sampler: ScriptedSampler(always: [session]))
+            let scene = try PretendScene(lock: lock)
+            let runner = scene.runner
+            let remover = makeRemover(
+                for: scene, signaler: signaler, sampler: ScriptedSampler(always: [session]))
             let seen = Recorder<Seen>()
 
             try await remover.remove(
-                makeRequest(lock: lock, stopping: [processGroup(session)]),
+                scene.request(deleteBranch: true, stopping: [processGroup(session)]),
                 recheck: {
                     seen.append(
                         Seen(
                             signals: signaler.signals, gitCommands: runner.calls.count,
                             ownerAlive: signaler.isAlive(4242)))
-                    return .ready(needsStopping: true)
+                    return .ready(needsStopping: false)
                 })
 
             // The owner of the lock has been told to stop and has, nothing has been run yet, and it is asked just once.
             #expect(seen.all == [Seen(signals: [[4242, SIGTERM]], gitCommands: 0, ownerAlive: false)])
             #expect(
-                runner.calls.map(\.subcommand) == [
-                    ["worktree", "unlock", "--", "/work/wt"],
-                    ["worktree", "remove", "--", "/work/wt"],
+                runner.writes == [
+                    ["worktree", "unlock", "--", scene.worktree.path],
+                    ["worktree", "remove", "--", scene.worktree.path],
                     ["branch", "-D", "--", "b"],
                 ])
         }
@@ -354,30 +379,25 @@ extension WorktreeRemoverTests {
             let session = processRecord(4242)
             let signaler = ScriptedSignaler(alive: [4242])
             let remover = makeRemover(signaler: signaler, sampler: ScriptedSampler(always: [session]))
+            let request = scene.request(stopping: [processGroup(session)])
 
             await #expect(throws: RemovalError.stateChanged(.blocked([.untracked(1)]))) {
-                try await remover.remove(
-                    makeRequest(stopping: [processGroup(session)]), recheck: { .blocked([.untracked(1)]) })
+                try await remover.remove(request, recheck: { .blocked([.untracked(1)]) })
             }
 
             #expect(!signaler.isAlive(4242))
-            #expect(runner.calls.isEmpty)
+            #expect(scene.runner.calls.isEmpty)
         }
 
         // MARK: Helpers
 
-        /// Removes a worktree that is not there: its lock, when it has one, and its branch.
-        private func makeRequest(lock: WorktreeLock? = nil, stopping groups: [ProcessGroup] = []) -> RemovalRequest {
-            RemovalRequest(
-                repo: URL(filePath: "/work/repo"), worktree: Worktree(path: "/work/wt", branch: "b", lock: lock),
-                deleteBranch: true, stopGroups: groups)
-        }
-
         private func makeRemover(
-            signaler: ScriptedSignaler = ScriptedSignaler(alive: []),
+            for scene: PretendScene? = nil, signaler: ScriptedSignaler = ScriptedSignaler(alive: []),
             sampler: ScriptedSampler = ScriptedSampler(always: [])
         ) -> WorktreeRemover {
-            WorktreeRemover(runner: runner, signaler: signaler, sampler: sampler, stopTimeout: .milliseconds(200))
+            WorktreeRemover(
+                runner: (scene ?? self.scene).runner, signaler: signaler, sampler: sampler,
+                stopTimeout: .milliseconds(200))
         }
     }
 }
