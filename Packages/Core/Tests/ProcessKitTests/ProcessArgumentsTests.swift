@@ -3,14 +3,41 @@ import Testing
 @testable import ProcessKit
 
 /// How the kernel hands out the arguments of a process (`sysctl KERN_PROCARGS2`): `argc` in the byte order of the host,
-/// the path that the program was started from, NULs that pad it, then `argc` arguments and the environment, each string
-/// ended by a NUL. The tests build such buffers, whole and cut short, and check what comes out.
+/// the path that the program was started from and as many NULs after it as make the path, with its NUL, a multiple of 8
+/// bytes long, then `argc` arguments and the environment, each string ended by a NUL. The tests build such buffers,
+/// whole and cut short, and check what comes out.
 @Suite struct ProcessArgumentsTests {
     @Test func readsArgcStringsAfterThePathAndItsPadding() {
-        // The kernel pads the path to a multiple of 8 bytes. The reader does not rely on that, and skips every NUL.
-        for padding in [0, 1, 6, 7, 15] {
-            let layout = Layout(path: "/bin/sleep", padding: padding, arguments: ["/bin/sleep", "30"])
-            #expect(layout.parsed == ["/bin/sleep", "30"], "padding \(padding)")
+        // A path of every length, so that the padding is each of the eight that there are, twice.
+        for pathLength in 1...16 {
+            let path = String(repeating: "p", count: pathLength)
+
+            #expect(Layout(path: path, arguments: [path, "30"]).parsed == [path, "30"], "path of \(pathLength) bytes")
+        }
+    }
+
+    @Test func keepsEmptyArgumentsAtTheStartAndNeverReadsIntoTheEnvironment() {
+        // An empty argument is one NUL, and so is the padding of the path. The NULs beyond the padding that the kernel
+        // gives are empty arguments, and `argc` says where the arguments end, with the environment behind them.
+        let environment = ["HOME=/Users/x", "PATH=/usr/bin"]
+        let lists = [[""], ["", ""], ["", "30"], ["", "", "30"], ["", "30", ""], ["", "-c", "echo hi", "", "x"]]
+        for pathLength in 1...16 {
+            let path = String(repeating: "p", count: pathLength)
+            for arguments in lists {
+                let layout = Layout(path: path, arguments: arguments, environment: environment)
+
+                #expect(layout.parsed == arguments, "path of \(pathLength) bytes, arguments \(arguments)")
+            }
+        }
+    }
+
+    @Test func aPathThatIsPaddedLessThanTheKernelPadsIsReadFromTheFirstByteThatIsNotNUL() {
+        // Not a buffer that the kernel gives: "/bin/tool" has 9 bytes, so it is followed by 7 NULs. There is no way to
+        // tell empty arguments from padding then, and the reading does not guess: the arguments are what comes after.
+        for nuls in 1..<7 {
+            let layout = Layout(path: "/bin/tool", nuls: nuls, arguments: ["a", "b"], environment: ["HOME=/x"])
+
+            #expect(layout.parsed == ["a", "b"], "\(nuls) NULs")
         }
     }
 
@@ -26,6 +53,9 @@ import Testing
         #expect(Layout(argc: 0, arguments: ["a", "b"]).parsed == [])
         #expect(Layout(argc: -1, arguments: ["a", "b"]).parsed == [])
         #expect(Layout(argc: Int32.min, arguments: ["a"]).parsed == [])
+        // Empty arguments are counted in the same way: an `argc` of 1 leaves the second one out.
+        #expect(Layout(argc: 1, arguments: ["", "", "x"]).parsed == [""])
+        #expect(Layout(argc: 2, arguments: ["", "", "", "x"], environment: ["HOME=/x"]).parsed == ["", ""])
     }
 
     @Test func anArgcThatIsTooBigGivesTheStringsThatThereAre() {
@@ -40,17 +70,20 @@ import Testing
     }
 
     @Test func aBufferThatEndsEarlyGivesTheArgumentsThatAreWhole() {
-        let layout = Layout(
-            path: "/bin/sh", padding: 0, arguments: ["/bin/sh", "-c", "echo hi", "", "last"], environment: ["HOME=/x"])
+        for pathLength in 1...8 {
+            let layout = Layout(
+                path: String(repeating: "p", count: pathLength),
+                arguments: ["", "-c", "echo hi", "", "last"], environment: ["HOME=/x"])
 
-        for length in 0...layout.bytes.count {
-            // A string whose end is not there is not an argument yet, and one whose end is there is not left out.
-            let whole = layout.argumentEnds.filter { $0 <= length }.count
-            #expect(
-                Kernel.parseArguments(layout.bytes[..<length]) == Array(layout.arguments.prefix(whole)),
-                "cut after \(length) of \(layout.bytes.count) bytes")
+            for length in 0...layout.bytes.count {
+                // A string whose end is not there is not an argument yet, and one whose end is there is not left out.
+                let whole = layout.argumentEnds.filter { $0 <= length }.count
+                #expect(
+                    Kernel.parseArguments(layout.bytes[..<length]) == Array(layout.arguments.prefix(whole)),
+                    "path of \(pathLength) bytes, cut after \(length) of \(layout.bytes.count) bytes")
+            }
+            #expect(layout.parsed == layout.arguments)
         }
-        #expect(layout.parsed == layout.arguments)
     }
 
     @Test func aBufferWithoutAnArgcOrWithoutAWholePathGivesNothing() {
@@ -94,14 +127,15 @@ private struct Layout {
     var argumentEnds: [Int] = []
     let arguments: [String]
 
-    /// `path` is followed by its NUL and by `padding` more; `argc` is the number of arguments unless it is given.
+    /// `path` is followed by `nuls` NULs: as many as make the path and its NUL a multiple of 8 bytes long, which is
+    /// what the kernel gives, unless the test says otherwise. `argc` is the number of arguments unless it is given.
     init(
-        argc: Int32? = nil, path: String = "/bin/tool", padding: Int = 0, arguments: [String],
+        argc: Int32? = nil, path: String = "/bin/tool", nuls: Int? = nil, arguments: [String],
         environment: [String] = []
     ) {
         self.arguments = arguments
         bytes = withUnsafeBytes(of: argc ?? Int32(arguments.count)) { Array($0) }
-        bytes += Array(path.utf8) + [UInt8](repeating: 0, count: 1 + padding)
+        bytes += Array(path.utf8) + [UInt8](repeating: 0, count: nuls ?? 8 - path.utf8.count % 8)
         for argument in arguments {
             bytes += Array(argument.utf8) + [0]
             argumentEnds.append(bytes.count)

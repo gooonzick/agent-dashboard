@@ -59,6 +59,15 @@ import Testing
         }
     }
 
+    @Test func keepsAnEmptyFirstArgumentAndStopsWhereTheArgumentsEnd() throws {
+        // `exec -a "" sleep 30`: only the padding of the path says where the arguments begin, and the environment,
+        // which the child has, comes right behind them.
+        try withChild("/bin/sleep", ["30"], argv0: "") { pid in
+            let arguments = try record(of: pid).arguments
+            #expect(arguments == ["", "30"])
+        }
+    }
+
     @Test func aWorkingDirectoryThatHasBeenDeletedIsStillReportedByItsPath() throws {
         // A process that is left in a folder that was removed is still the folder's, and has to be found there.
         let dir = try TempDir(named: "My Projects")

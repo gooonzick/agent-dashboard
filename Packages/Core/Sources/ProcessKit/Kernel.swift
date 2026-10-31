@@ -171,24 +171,31 @@ enum Kernel {
     }
 
     /// The arguments in what `sysctl KERN_PROCARGS2` returns: `argc` in the byte order of the host, the path that the
-    /// program was started from, the NULs that pad it, then `argc` strings that are `argv`, and then the environment.
-    /// Each string ends with a NUL.
+    /// program was started from, its NUL and the NULs that pad the path and its NUL to a multiple of 8 bytes, then
+    /// `argc` strings that are `argv`, and then the environment. Each string ends with a NUL.
     ///
-    /// Exactly `argc` strings are returned, not the path, which is no argument, and not the environment. A buffer that
-    /// ends before that, or that makes no sense, gives the strings that are whole: one whose NUL is not there may have
-    /// been cut short, and is not an argument yet.
+    /// Exactly `argc` strings are returned: not the path, which is no argument, and never the environment. A buffer
+    /// that ends before that, or that makes no sense, gives the strings that are whole: one whose NUL is not there may
+    /// have been cut short, and is not an argument yet.
     ///
-    /// An empty first argument cannot be told from the padding (`ps` cannot either). It is left out, and the reading
-    /// goes on into the environment by one string. Almost no program is started like that.
+    /// An empty argument is a NUL, as the padding is. The padding is known, though, so the NULs behind the path that
+    /// are more than it are empty arguments at the start: the first argument begins where the padding ends, which is
+    /// not always where the NULs end. A buffer with fewer NULs than the padding is none that the kernel gives. It is
+    /// read from the first byte that is not a NUL, as `ps` reads every buffer.
     static func parseArguments(_ bytes: ArraySlice<UInt8>) -> [String] {
         guard bytes.count >= MemoryLayout<Int32>.size else { return [] }
-        let argc = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        let argc = Int(bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
         guard argc > 0 else { return [] }
 
         guard let endOfPath = bytes.dropFirst(MemoryLayout<Int32>.size).firstIndex(of: 0) else { return [] }
-        var rest = bytes[endOfPath...].drop { $0 == 0 }
+        let pathLength = endOfPath - (bytes.startIndex + MemoryLayout<Int32>.size)
+        // The NULs behind the path: its own, the padding that makes the path and its NUL a multiple of 8 bytes long,
+        // and one for each empty argument at the start.
+        let nuls = bytes[endOfPath...].prefix { $0 == 0 }.count
+        let padding = 8 - pathLength % 8
+        var arguments = [String](repeating: "", count: min(max(nuls - padding, 0), argc))
 
-        var arguments: [String] = []
+        var rest = bytes[(endOfPath + nuls)...]
         while arguments.count < argc, let end = rest.firstIndex(of: 0) {
             arguments.append(String(decoding: rest[..<end], as: UTF8.self))
             rest = rest[(end + 1)...]

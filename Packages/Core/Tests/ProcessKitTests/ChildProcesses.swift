@@ -13,7 +13,8 @@ extension POSIXError {
 
 /// Runs `body` with the id of a child that runs `executable` and has the descriptors in `inheriting`, and no others.
 /// `argv0` is what the child is told that it was called, which `Process` does not let one choose: the path of the
-/// executable if it is not given.
+/// executable if it is not given. The child has an environment of one variable, so that a reader of its arguments
+/// that strays into the environment is caught.
 ///
 /// A plain `posix_spawn` child gets every descriptor of the test that is not marked close-on-exec, those of the tests
 /// that run beside this one included, and it would hold a pipe of another test open. The child is killed, and
@@ -61,11 +62,16 @@ private func startChild(
     for descriptor in descriptors { posix_spawn_file_actions_addinherit_np(&actions, descriptor) }
 
     let argv = ([argv0 ?? executable] + arguments).map { strdup($0) } + [nil]
+    let envp: [UnsafeMutablePointer<CChar>?] = [strdup(childEnvironmentVariable), nil]
     defer {
-        for argument in argv { free(argument) }
+        for string in argv + envp { free(string) }
     }
     var pid: pid_t = 0
-    let status = posix_spawn(&pid, executable, &actions, &attributes, argv, [nil])
+    let status = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
     guard status == 0 else { throw POSIXError(errno: status) }
     return pid
 }
+
+/// The one variable in the environment of a child. It is no argument of any process, so it is found in `arguments` only
+/// if the arguments are read too far.
+let childEnvironmentVariable = "PK_TEST_ENVIRONMENT=not-an-argument"

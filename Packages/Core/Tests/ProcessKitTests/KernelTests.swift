@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 import TestSupport
 import Testing
 
@@ -15,6 +16,25 @@ import Testing
         #expect(pids.contains(getpid()) && pids.contains(p.processIdentifier))
         #expect(pids.allSatisfy { $0 > 0 })  // the kernel's own entry is 0, which `kill` takes for a group
         #expect(Set(pids).count == pids.count)
+    }
+
+    @Test func readsArgumentsWhateverTheLengthOfThePath() throws {
+        // The kernel pads the path that a program was started from to a multiple of 8 bytes, and the arguments follow.
+        // The path is the one that `exec` was given, so a link to a system program with a name of 1 to 8 letters makes
+        // a process for each of the eight paddings, and what runs is still the system's own program.
+        let dir = try TempDir(named: "My Projects")
+        var reader = Kernel.ArgumentsReader()
+        for length in 1...8 {
+            let link = dir.url.appending(path: String(repeating: "s", count: length)).path
+            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "/bin/sleep")
+            for argv0 in [nil, ""] as [String?] {
+                try withChild(link, ["30"], argv0: argv0) { pid in
+                    let arguments = reader.arguments(of: pid)
+                    let named = "path of \(link.utf8.count) bytes, argv[0] \(argv0 ?? "path")"
+                    #expect(arguments == [argv0 ?? link, "30"], Comment(rawValue: named))
+                }
+            }
+        }
     }
 
     @Test func aProcessThatRunsHasNotExited() throws {
