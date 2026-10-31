@@ -72,10 +72,10 @@ enum Fixture {
     }
 
     /// An app that was built from the project: it sits in `/` and is known by the file that it runs. Xcode started it,
-    /// so its parent is not launchd.
-    static func builtApp(in root: String) -> [ProcessRecord] {
+    /// unless `parent` says another process did. An app that is opened from the Finder has launchd (1) for its parent.
+    static func builtApp(in root: String, startedBy parent: Int32 = 4_000) -> [ProcessRecord] {
         let app = "\(root)/build/DerivedData/Build/Products/Debug/Minuta.app/Contents/MacOS/Minuta"
-        return [proc(800, "Minuta", parent: 4_000, exe: app, args: [app], mb: 120)]
+        return [proc(800, "Minuta", parent: parent, exe: app, args: [app], mb: 120)]
     }
 
     /// Codex's daemon, started by launchd, in the folder of the project.

@@ -29,9 +29,12 @@ import Foundation
 /// argument, in any case: nothing for none, and `, 1 MCP server` for one. A session of Codex is titled `Codex CLI`.
 ///
 /// **Everything else.** A process leads a group when its parent is not in the same worktree, and the group is the
-/// descendants that are, down to the first that is not. Its title is the name of the leader. Its kind is the first of:
-/// `devServer` if anything in the group listens on a port; `daemon` if launchd started the leader; `builtHere` if the
-/// leader runs a file in the worktree; `shell` if it is one; `other`.
+/// descendants that are, down to the first that is not. Its kind is the first of: `devServer` if anything in the group
+/// listens on a port; `builtHere` if the leader runs a file in the worktree, however it was started (an app that is
+/// opened from the Finder has launchd for its parent); `daemon` if launchd started the leader; `shell` if it is one;
+/// `other`. A dev server is titled with the name of the process that listens, the first by pid of those that do, the
+/// leader's among them: a shell that runs one is a `node`, not a `zsh`. Any other group is titled with the name of the
+/// leader.
 ///
 /// A process is in at most one group, and a group is of one worktree: a process that is in another worktree than its
 /// parent leaves the parent's group, and leads one in its own. Processes in no worktree are in no group, but for the
@@ -91,10 +94,9 @@ public struct ProcessAttributor: Sendable {
             }
 
             let members = tree.descendants(of: leader) { rootOf[$0.pid] == root && !claimed.contains($0.pid) }
-            let kind = Self.kind(of: leader, members: members, in: roots[root])
             claimed.insert(leader.pid)
             claimed.formUnion(members.map(\.pid))
-            found.append((root, ProcessGroup(kind: kind, title: leader.name, leader: leader, members: members)))
+            found.append((root, Self.group(of: leader, members: members, in: roots[root])))
         }
 
         var result: [String: [ProcessGroup]] = [:]
@@ -169,14 +171,22 @@ public struct ProcessAttributor: Sendable {
         }
     }
 
-    private static func kind(of leader: ProcessRecord, members: [ProcessRecord], in root: Root) -> ProcessKind {
-        if !leader.listeningPorts.isEmpty || members.contains(where: { !$0.listeningPorts.isEmpty }) {
-            return .devServer
+    /// A group that is not a session: what it is, and what it is called.
+    private static func group(of leader: ProcessRecord, members: [ProcessRecord], in root: Root) -> ProcessGroup {
+        // What listens is what the group is, whoever started it: a shell that runs a dev server is the server.
+        let listeners = ([leader] + members).filter { !$0.listeningPorts.isEmpty }
+        if let listener = listeners.min(by: { $0.pid < $1.pid }) {
+            return ProcessGroup(kind: .devServer, title: listener.name, leader: leader, members: members)
         }
-        if leader.ppid == 1 { return .daemon }
+        return ProcessGroup(kind: kind(of: leader, in: root), title: leader.name, leader: leader, members: members)
+    }
+
+    /// The kind of a group that has nothing that listens.
+    private static func kind(of leader: ProcessRecord, in root: Root) -> ProcessKind {
         // A file that is gone proves nothing: its path may still be among the arguments, but the process was not seen
         // to run from the worktree.
         if let executable = leader.executablePath, root.contains(executable) { return .builtHere }
+        if leader.ppid == 1 { return .daemon }
         return leader.isShell ? .shell : .other
     }
 }

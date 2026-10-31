@@ -52,9 +52,11 @@ public enum ProcessKind: String, Sendable, Codable {
     case agentSession
     /// Something in the group listens on a TCP port.
     case devServer
-    /// The parent of the leader is launchd: the system started it, or whatever did has exited.
+    /// The parent of the leader is launchd: the system started it, or whatever did has exited. Not so for what runs a
+    /// file of the worktree, which is `builtHere`.
     case daemon
-    /// The leader runs a file that lies in the worktree: a build product.
+    /// The leader runs a file that lies in the worktree: a build product, whoever started it. An app that is opened
+    /// from the Finder has launchd for its parent.
     case builtHere
     /// A shell, a login shell included.
     case shell
@@ -70,7 +72,8 @@ public struct ProcessGroup: Sendable, Equatable, Codable, Identifiable {
     /// The pid of the leader: no process leads two groups.
     public var id: Int32 { leader.pid }
     public let kind: ProcessKind
-    /// What the dashboard calls the group.
+    /// What the dashboard calls the group. A session is titled by what it is (`Claude Code · CLI, 2 MCP servers`), a
+    /// dev server by the name of the process that listens, and any other group by the name of its leader.
     public let title: String
     /// The process that the group is named for: the session of an agent, or the first process of its worktree to have
     /// been started from outside it.

@@ -580,6 +580,7 @@ extension ProcessAttributorTests {
             ]
             let session = try #require(attribute(processes)[worktree]?.first)
             #expect(session.kind == .agentSession && session.ports == [3000])
+            #expect(session.title == "Claude Code · CLI, 1 MCP server")  // not the name of what listens
         }
     }
 }
@@ -622,12 +623,16 @@ struct KindCase: Sendable, CustomTestStringConvertible {
 }
 
 private let kindCases = [
-    // Each is a shell from the worktree started by launchd that listens, except for what each leaves out.
+    // A shell that listens, runs a file of the worktree and was started by launchd. Each case leaves out what made the
+    // one before it what it is.
     KindCase(ports: [8080], parent: 1, runsFromTheWorktree: true, name: "zsh", kind: .devServer),
-    KindCase(ports: [], parent: 1, runsFromTheWorktree: true, name: "zsh", kind: .daemon),
-    KindCase(ports: [], parent: nobody, runsFromTheWorktree: true, name: "zsh", kind: .builtHere),
+    // An app that is opened from the Finder has launchd for its parent: the file that it runs says what it is.
+    KindCase(ports: [], parent: 1, runsFromTheWorktree: true, name: "zsh", kind: .builtHere),
+    KindCase(ports: [], parent: 1, runsFromTheWorktree: false, name: "zsh", kind: .daemon),
     KindCase(ports: [], parent: nobody, runsFromTheWorktree: false, name: "zsh", kind: .shell),
     KindCase(ports: [], parent: nobody, runsFromTheWorktree: false, name: "node", kind: .other),
+    // The file of the worktree says it just as well when another process started it.
+    KindCase(ports: [], parent: nobody, runsFromTheWorktree: true, name: "zsh", kind: .builtHere),
     // Only what launchd started is a daemon: the parent of launchd itself is the kernel.
     KindCase(ports: [], parent: 0, runsFromTheWorktree: false, name: "node", kind: .other),
 ]
@@ -650,7 +655,7 @@ extension ProcessAttributorTests {
             #expect(attribute([leader])[worktree]?.first?.kind == kindCase.kind)
         }
 
-        @Test func aShellThatRunsAServerIsOneGroupOfThatServer() throws {
+        @Test func aShellThatRunsAServerIsOneGroupTitledByTheServer() throws {
             // The shell started in the worktree by something outside it, so it leads, and the server is its member.
             let processes = [
                 proc(10, "zsh", parent: nobody, exe: "/bin/zsh", args: ["-zsh"], cwd: worktree),
@@ -658,8 +663,42 @@ extension ProcessAttributorTests {
                 proc(12, "esbuild", parent: 11, cwd: worktree),
             ]
             let group = try theOnly(attribute(processes)[worktree])
-            #expect(group.kind == .devServer && group.title == "zsh")
+            #expect(group.kind == .devServer && group.leader.name == "zsh")
+            #expect(group.title == "node")  // what listens is what the group is, not the shell that started it
             #expect(group.ports == [4200] && pids(of: group) == [10, 11, 12])
+        }
+
+        @Test func aDevServerIsTitledByTheFirstByPidOfTheProcessesThatListen() {
+            // Two servers under a shell. The one with the lower pid is not the first listed, and that is no matter.
+            let servers = [
+                proc(10, "zsh", parent: nobody, exe: "/bin/zsh", args: ["-zsh"], cwd: worktree),
+                proc(30, "vite", parent: 10, cwd: worktree, ports: [5173]),
+                proc(20, "node", parent: 10, cwd: worktree, ports: [4200]),
+                proc(25, "esbuild", parent: 20, cwd: worktree),
+            ]
+            #expect(attribute(servers)[worktree]?.map(\.title) == ["node"])
+
+            // The leader is one of the listeners: it is the title if its pid is the lowest, and not otherwise (a pid
+            // that wrapped around is below that of the parent that started it).
+            let leaderFirst = [
+                proc(10, "node", parent: nobody, cwd: worktree, ports: [4200]),
+                proc(20, "ws", parent: 10, cwd: worktree, ports: [9229]),
+            ]
+            let memberFirst = [
+                proc(60, "npm", parent: nobody, cwd: worktree, ports: [3000]),
+                proc(20, "node", parent: 60, cwd: worktree, ports: [4200]),
+            ]
+            #expect(attribute(leaderFirst)[worktree]?.map(\.title) == ["node"])
+            #expect(attribute(memberFirst)[worktree]?.map(\.title) == ["node"])
+        }
+
+        @Test func aGroupThatDoesNotListenIsTitledByItsLeader() {
+            // A shell, a built app, a daemon and any other process: no listener, so the name of the leader.
+            let processes = [
+                proc(10, "zsh", parent: nobody, exe: "/bin/zsh", args: ["-zsh"], cwd: worktree),
+                proc(11, "node", parent: 10, args: ["node", "build.js"], cwd: worktree),
+            ]
+            #expect(attribute(processes)[worktree]?.map(\.title) == ["zsh"])
         }
 
         @Test func aDeletedBinaryIsNeverBuiltHere() {
@@ -669,6 +708,21 @@ extension ProcessAttributorTests {
             let deleted = proc(10, "Minuta", parent: nobody, binaryDeleted: true, args: [path])
             #expect(attribute([present])[worktree]?.first?.kind == .builtHere)
             #expect(attribute([deleted])[worktree]?.first?.kind == .other)
+            // Started by launchd, it is what launchd's children are: no file, no "built here".
+            let orphan = proc(10, "Minuta", parent: 1, binaryDeleted: true, args: [path])
+            #expect(attribute([orphan])[worktree]?.first?.kind == .daemon)
+        }
+
+        @Test func anAppThatLaunchdStartedIsBuiltHereWhenItRunsAFileOfTheWorktree() throws {
+            // An app that is opened from the Finder has launchd for its parent. The file that it runs says what it is,
+            // and `Minuta.app` from DerivedData is the example of a build product.
+            let minuta = "/Users/dev/projects/minuta"
+            for parent: Int32 in [1, 4_000] {
+                let group = try theOnly(
+                    attribute(Fixture.builtApp(in: minuta, startedBy: parent), roots: [minuta])[minuta])
+                #expect(group.leader.ppid == parent)
+                #expect(group.kind == .builtHere && group.title == "Minuta")
+            }
         }
 
         @Test func builtHereIsAboutTheWorktreeThatTheGroupIsIn() {
