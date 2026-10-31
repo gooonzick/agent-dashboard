@@ -17,7 +17,7 @@ let package = Package(
         .target(name: "CoreModels", swiftSettings: strict),
         .target(name: "Shell", swiftSettings: strict),
         .target(name: "Discovery", dependencies: ["CoreModels"], swiftSettings: strict),
-        .target(name: "GitKit", dependencies: ["CoreModels", "Shell"], swiftSettings: strict),
+        .target(name: "GitKit", dependencies: ["CoreModels", "Shell", "ProcessKit", "Safety"], swiftSettings: strict),
         .target(name: "Hosting", dependencies: ["CoreModels", "Shell"], swiftSettings: strict),
         .target(name: "DiskUsage", dependencies: ["CoreModels"], swiftSettings: strict),
         .target(name: "ProcessKit", dependencies: ["CoreModels"], swiftSettings: strict),
@@ -29,7 +29,8 @@ let package = Package(
         .testTarget(name: "ShellTests", dependencies: ["Shell", "TestSupport"], swiftSettings: strict),
         .testTarget(name: "DiscoveryTests", dependencies: ["Discovery", "TestSupport"], swiftSettings: strict),
         .testTarget(
-            name: "GitKitTests", dependencies: ["GitKit", "CoreModels", "Shell", "TestSupport"],
+            name: "GitKitTests",
+            dependencies: ["GitKit", "CoreModels", "Shell", "ProcessKit", "Safety", "TestSupport"],
             swiftSettings: strict),
         .testTarget(
             name: "HostingTests", dependencies: ["Hosting", "CoreModels", "Shell"], resources: [.copy("Fixtures")],
