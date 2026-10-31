@@ -15,13 +15,14 @@ public struct WorktreeLock: Sendable, Equatable, Codable {
 
     /// A lock with `reason`, held by the process the reason names, if it does.
     ///
-    /// Claude Code locks the worktree of each of its sessions with `claude session <name> (pid <N> start <date>)`: the
-    /// owner is the number after the first `pid `, which has to be a word of its own. Anything else, a reason somebody
-    /// typed by hand, names no owner. Neither does a number that is no process id: zero would stand for a whole
-    /// process group when it is passed to `kill`, and a number that does not fit in 32 bits is not one at all.
+    /// Claude Code locks the worktree of each of its sessions with `claude session <name> (pid <N> start <date>)`, and
+    /// only a reason that is exactly that names an owner: the number after `pid`. A reason that somebody typed by hand
+    /// names none, whatever it says: "keep until pid 1234 finishes" is no session of Claude Code, and the process 1234
+    /// does not hold the lock. Neither does a number that is no process id name one: it does not begin with a digit
+    /// above 0 (zero would stand for a whole process group when it is passed to `kill`), or it does not fit in 32 bits.
     public init(reason: String) {
-        let owner = reason.firstMatch(of: /\bpid (\d+)/).flatMap { Int32($0.1) }
-        self.init(reason: reason, ownerPID: owner.flatMap { $0 > 0 ? $0 : nil })
+        let session = /claude session .+ \(pid ([1-9][0-9]*) start [^)]*\)/
+        self.init(reason: reason, ownerPID: reason.wholeMatch(of: session).flatMap { Int32($0.1) })
     }
 }
 

@@ -86,10 +86,13 @@ import Testing
         #expect(worktrees.map(\.lock) == [nil, WorktreeLock(reason: "", ownerPID: nil)])
     }
 
-    @Test func aLockTypedByHandHasAReasonAndNoOwner() {
-        let out = "worktree /a\nHEAD 1\nbranch refs/heads/a\nlocked on usb drive\n"
-        #expect(
-            GitParsers.worktrees(porcelain: out).map(\.lock) == [WorktreeLock(reason: "on usb drive", ownerPID: nil)])
+    @Test(arguments: [
+        "on usb drive",
+        "keep until pid 1234 finishes",  // it names a process, but that is no session of Claude Code
+    ])
+    func aLockTypedByHandHasAReasonAndNoOwner(reason: String) {
+        let out = "worktree /a\nHEAD 1\nbranch refs/heads/a\nlocked \(reason)\n"
+        #expect(GitParsers.worktrees(porcelain: out).map(\.lock) == [WorktreeLock(reason: reason, ownerPID: nil)])
     }
 
     @Test func aLockKeepsTheWholeReasonAndTheOwnerOutOfIt() {
