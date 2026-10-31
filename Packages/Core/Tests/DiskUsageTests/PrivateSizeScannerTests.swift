@@ -10,6 +10,9 @@ import Testing
 /// The size of the data files that the tests write, unless a test says otherwise.
 private let mebibyte = 1 << 20
 
+/// The kinds of volume that the scanner tells apart.
+typealias Volume = PrivateSizeScanner.Volume
+
 /// Whether `bytes` is `mebibytes` MiB, give or take 64 KiB. A file of 1 MiB takes 1 MiB on APFS, but the tests do not
 /// depend on how the file system rounds up to its blocks.
 private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
@@ -230,6 +233,33 @@ private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
         #expect(isAbout(1, onTheVolume.privateBytes))  // a local volume that is not APFS: no clones, all of it is freed
     }
 
+    @Test(.timeLimit(.minutes(2)))
+    func aMountedVolumeIsUnmountedEvenWhenTheTestIsCancelled() async throws {
+        // A time limit cancels the test while it runs. `CommandRunner` starts nothing in a cancelled task, so an
+        // unmount that inherited the cancellation would leave the image mounted, and the folder that it is mounted on
+        // would be deleted with the test, and with it what is on the volume.
+        let tmp = try TempDir(named: "My Projects")
+        let mounted = CallCounter()  // counts the bodies that ran: the volume is mounted while one does
+        let finished = CallCounter()
+        let task = Task {
+            defer { _ = finished.next() }
+            try await tmp.withMountedVolume(at: "inside/mounted") {
+                _ = mounted.next()
+                while !Task.isCancelled { usleep(10_000) }  // stays until the test is cancelled
+            }
+        }
+        defer { task.cancel() }
+        while mounted.total == 0, finished.total == 0 { try await Task.sleep(for: .milliseconds(20)) }
+
+        task.cancel()
+        let result = await task.result
+
+        let folderDevice = try device(ofItemAt: tmp.url.appending(path: "inside").path)
+        let mountPointDevice = try device(ofItemAt: tmp.url.appending(path: "inside/mounted").path)
+        #expect(mountPointDevice == folderDevice, "the volume is still mounted")
+        try result.get()  // where a disk image cannot be mounted, this is what skips the test, with the reason
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func doesNotFollowSymlinks() throws {
         let tmp = try TempDir(named: "My Projects")
@@ -274,11 +304,16 @@ private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
         #expect(error.code == .ENOTDIR)
     }
 
-    @Test(.disabled(if: getuid() == 0, "root can read any folder, so none of them is unreadable"))
-    func aRootThatCannotBeReadThrows() throws {
+    @Test(
+        .disabled(if: getuid() == 0, "root can read any folder, so none of them is unreadable"),
+        arguments: [mode_t(0o000), 0o444, 0o111])
+    func aRootThatIsNotBothReadableAndSearchableThrows(mode: mode_t) throws {
+        // No right at all (---); the right to list it and none to look at what is in it (r--); the reverse (--x). With
+        // r-- the names can be read, every file in the folder then comes back as an error that is passed over below the
+        // root, and the result would be zero without a word.
         let tmp = try TempDir(named: "My Projects")
         try tmp.makeFile("locked/data.bin")
-        try posix(chmod(tmp.url.appending(path: "locked").path, 0o000))
+        try posix(chmod(tmp.url.appending(path: "locked").path, mode))
         defer { chmod(tmp.url.appending(path: "locked").path, 0o755) }  // so that the TempDir can delete it again
 
         let error = try #require(throws: POSIXError.self) { try tmp.measure("locked") }
@@ -346,68 +381,110 @@ private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
 
     // What a volume says about a file, and what a file then frees. A file of 8192 bytes stands for the file.
 
-    @Test func takesThePrivateSizeThatAVolumeGives() {
-        for mayShare in [true, false] {
-            #expect(freed(.bytes(4096), mayShare: mayShare) == 4096)
-            #expect(freed(.bytes(0), mayShare: mayShare) == 0)
+    @Test(arguments: [Volume.apfs, .localWithoutClones])
+    func takesThePrivateSizeThatAVolumeOnThisComputerGives(volume: Volume) {
+        #expect(freed(.bytes(4096), on: volume) == 4096)
+        #expect(freed(.bytes(0), on: volume) == 0)
+    }
+
+    @Test func aVolumeThatIsNotOnThisComputerIsNotBelievedWhateverItAnswersAndIsNotAsked() {
+        // It can be an APFS volume of a server, with clones that this Mac cannot see, and what it says about a file is
+        // about the file system of the server.
+        let asked = CallCounter()
+        let answers: [PrivateSizeScanner.Answer] = [
+            .bytes(4096), .bytes(0), .failed(EINVAL), .failed(ENOTSUP), .failed(ENOENT), .failed(EACCES),
+        ]
+
+        for answer in answers {
+            #expect(freed(asked.counted(answer), on: .untrusted) == 0)
         }
+
+        #expect(asked.total == 0)
     }
 
     @Test(arguments: [ENOTSUP, EINVAL])
-    func aVolumeThatIsNotAPFSAndHasNoPrivateSizesFreesAllItAllocated(code: Int32) {
-        // Only APFS has clones, so on anything else a file frees all that it takes. HFS+ and exFAT, tried on disk
-        // images, refuse the request with EINVAL. ENOTSUP is what getattrlist documents for a volume that cannot
-        // answer.
-        #expect(freed(.failed(code), mayShare: false) == 8192)
+    func aVolumeOnThisComputerThatIsNotAPFSAndHasNoPrivateSizesFreesAllItAllocated(code: Int32) {
+        // Only APFS has clones, so on any other volume on this computer a file frees all that it takes. HFS+ and exFAT,
+        // tried on disk images, refuse the request with EINVAL. ENOTSUP is what getattrlist documents for a volume that
+        // cannot answer.
+        #expect(freed(.failed(code), on: .localWithoutClones) == 8192)
     }
 
     @Test(arguments: [ENOTSUP, EINVAL])
     func anAPFSVolumeThatHasNoPrivateSizesFreesNothingSoThatTheNumberIsNeverTooHigh(code: Int32) {
         // It should not happen, but the attribute is in a part of the system headers that is marked unstable. If a
         // later macOS stopped answering, the numbers must not turn into those of du, which this exists to avoid.
-        #expect(freed(.failed(code), mayShare: true) == 0)
+        #expect(freed(.failed(code), on: .apfs) == 0)
     }
 
-    @Test(arguments: [EACCES, EPERM, EIO, ENAMETOOLONG, ELOOP, ERANGE, EFAULT, ENOMEM], [true, false])
-    func anyOtherFailureFreesNothingSoThatTheNumberIsNeverTooHigh(code: Int32, mayShare: Bool) {
-        #expect(freed(.failed(code), mayShare: mayShare) == 0)
+    @Test(
+        arguments: [EACCES, EPERM, EIO, ENAMETOOLONG, ELOOP, ERANGE, EFAULT, ENOMEM],
+        [Volume.apfs, .localWithoutClones])
+    func anyOtherFailureFreesNothingSoThatTheNumberIsNeverTooHigh(code: Int32, volume: Volume) {
+        #expect(freed(.failed(code), on: volume) == 0)
     }
 
-    @Test(arguments: [ENOENT, ENOTDIR], [true, false])
-    func aFileThatIsGoneIsLeftOut(code: Int32, mayShare: Bool) {
-        #expect(freed(.failed(code), mayShare: mayShare) == nil)
-    }
-
-    @Test func asksWhatKindOfVolumeItIsOnlyWhenTheVolumeRefusedToAnswer() {
-        let asked = CallCounter()
-
-        _ = freed(.bytes(4096), mayShare: asked.askedAndTrue())
-        _ = freed(.failed(EACCES), mayShare: asked.askedAndTrue())
-        _ = freed(.failed(ENOENT), mayShare: asked.askedAndTrue())
-        #expect(asked.total == 0)  // on APFS every file is answered, and a statfs for each of them would be a waste
-
-        _ = freed(.failed(EINVAL), mayShare: asked.askedAndTrue())
-        #expect(asked.total == 1)
-    }
-
-    @Test func aVolumeMayShareDataUnlessItSaysItIsNotAPFS() throws {
-        let tmp = try TempDir(named: "My Projects")
-
-        #expect(PrivateSizeScanner.volumeMayShareData(at: tmp.url.path))  // the startup disk is APFS
-        #expect(!PrivateSizeScanner.volumeMayShareData(at: "/dev"))  // devfs is on every Mac, and is not APFS
-        #expect(PrivateSizeScanner.volumeMayShareData(at: "/no/such/place"))  // it cannot be asked: not ruled out
+    @Test(arguments: [ENOENT, ENOTDIR], [Volume.apfs, .localWithoutClones])
+    func aFileThatIsGoneIsLeftOut(code: Int32, volume: Volume) {
+        #expect(freed(.failed(code), on: volume) == nil)
     }
 
     @Test(arguments: [
-        // A volume that is on this computer and not APFS is the only one that is known not to share data.
-        ("hfs", true, false), ("exfat", true, false), ("msdos", true, false), ("devfs", true, false),
-        // APFS, and anything that is not on this computer, may: a network volume can be an APFS volume of the server,
-        // with clones that this Mac cannot see.
-        ("apfs", true, true), ("apfs", false, true), ("smbfs", false, true), ("nfs", false, true),
-        ("afpfs", false, true), ("autofs", false, true), ("hfs", false, true),
+        // A volume on this computer is believed: APFS for what it says, anything else for having no clones.
+        ("apfs", true, Volume.apfs), ("hfs", true, .localWithoutClones), ("exfat", true, .localWithoutClones),
+        ("msdos", true, .localWithoutClones), ("devfs", true, .localWithoutClones),
+        // A volume that is not on this computer is not, whatever it is: a network volume can be an APFS volume of the
+        // server, with clones that this Mac cannot see.
+        ("apfs", false, .untrusted), ("smbfs", false, .untrusted), ("nfs", false, .untrusted),
+        ("afpfs", false, .untrusted), ("autofs", false, .untrusted), ("hfs", false, .untrusted),
     ])
-    func onlyALocalVolumeThatIsNotAPFSIsKnownNotToShareData(fileSystem: String, isLocal: Bool, mayShare: Bool) {
-        #expect(PrivateSizeScanner.mayShareData(volume: statfs(fileSystem: fileSystem, isLocal: isLocal)) == mayShare)
+    func aVolumeIsOnlyBelievedWhenItIsOnThisComputer(fileSystem: String, isLocal: Bool, kind: Volume) {
+        #expect(Volume(statfs(fileSystem: fileSystem, isLocal: isLocal)) == kind)
+    }
+
+    @Test func theKindOfAVolumeIsWhatStatfsSaysOfIt() throws {
+        let tmp = try TempDir(named: "My Projects")
+
+        #expect(Volume(at: tmp.url.path) == .apfs)  // the startup disk
+        #expect(Volume(at: "/dev") == .localWithoutClones)  // devfs is on every Mac, on it, and is not APFS
+        #expect(Volume(at: "/no/such/place") == nil)  // it cannot be asked
+    }
+
+    @Test func aVolumeThatIsNotOnThisComputerFreesNothingEvenWhenItAnswers() throws {
+        // The volume of the scratch folder is APFS and answers: the file would free 1 MiB. Told that it is not on this
+        // computer, the scanner counts the file for what it takes, and nothing as freed.
+        let tmp = try TempDir(named: "My Projects")
+        try tmp.makeFile("inside/data.bin")
+
+        let size = try tmp.measure("inside", lookUpVolume: { _ in .untrusted })
+
+        #expect(isAbout(1, size.apparentBytes))
+        #expect(size.privateBytes == 0)
+    }
+
+    @Test func asksWhatKindOfVolumeItIsOncePerVolumeNotOncePerFile() throws {
+        let tmp = try TempDir(named: "My Projects")
+        for number in 0..<5 { try tmp.makeFile("inside/folder\(number)/data.bin", bytes: 4096) }
+        let asked = CallCounter()
+
+        let size = try tmp.measure("inside", lookUpVolume: { _ in asked.counted(.apfs) })
+
+        #expect(asked.total == 1)
+        #expect(size.privateBytes == size.apparentBytes)  // and the answers of the volume are used
+    }
+
+    @Test func aVolumeThatCannotBeAskedIsNotBelievedForThatFileAndAskedAgainForTheNext() throws {
+        let tmp = try TempDir(named: "My Projects")
+        try tmp.makeFile("inside/one.bin")
+        try tmp.makeFile("inside/two.bin")
+        let asked = CallCounter()
+
+        // The volume is out of reach for the first file. For the second it answers.
+        let size = try tmp.measure("inside", lookUpVolume: { _ in asked.next() == 1 ? nil : .apfs })
+
+        #expect(asked.total == 2)
+        #expect(isAbout(2, size.apparentBytes))  // both files are counted for what they take
+        #expect(isAbout(1, size.privateBytes))  // the first frees nothing, as far as is known
     }
 
     @Test func askingAboutASymlinkIsAskingAboutTheSymlinkNotWhatItPointsTo() throws {
@@ -437,19 +514,19 @@ private final class CallCounter: Sendable {
         }
     }
 
-    /// Counts one more call, for an argument whose value is only worked out when it is needed.
-    func askedAndTrue() -> Bool {
+    /// Counts one more call, for an argument whose value is only worked out when it is needed. Returns `value`.
+    func counted<Value>(_ value: Value) -> Value {
         _ = next()
-        return true
+        return value
     }
 
     var total: Int { calls.withLock { $0 } }
 }
 
-/// What deleting a file that takes 8192 bytes frees, if its volume gave `answer`. `mayShare` says whether files on
-/// that volume can share data; like the argument of `freedBytes` it is only worked out when it is needed.
-private func freed(_ answer: PrivateSizeScanner.Answer, mayShare: @autoclosure () -> Bool) -> Int64? {
-    PrivateSizeScanner.freedBytes(allocated: 8192, answer: answer, volumeMayShareData: mayShare())
+/// What deleting a file that takes 8192 bytes frees, if its volume is of the kind `volume` and gives `answer`. Like the
+/// argument of `freedBytes`, `answer` is only worked out when it is needed.
+private func freed(_ answer: @autoclosure () -> PrivateSizeScanner.Answer, on volume: Volume) -> Int64? {
+    PrivateSizeScanner.freedBytes(allocated: 8192, volume: volume, answer: answer())
 }
 
 extension statfs {
@@ -480,13 +557,51 @@ private struct CommandFailure: Error, CustomStringConvertible {
     var description: String { "\(command) exited with \(exitCode): \(output)" }
 }
 
-/// Runs `hdiutil <arguments>`, and throws what it printed if it fails.
-private func hdiutil(_ arguments: String...) async throws {
-    let result = try await CommandRunner().run("hdiutil", arguments, in: nil, timeout: .seconds(60))
+/// Runs `hdiutil <arguments>`, and throws what it printed if it fails, or that it did not finish within `timeout`.
+private func hdiutil(timeout: Duration = .seconds(30), _ arguments: String...) async throws {
+    let result = try await CommandRunner().run("hdiutil", arguments, in: nil, timeout: timeout)
     guard result.exitCode == 0 else {
         throw CommandFailure(
             command: "hdiutil " + arguments.joined(separator: " "), exitCode: result.exitCode,
             output: result.stdout + result.stderr)
+    }
+}
+
+/// Runs `operation` in a task of its own, which a cancellation of the caller does not reach.
+///
+/// A time limit cancels the test while it runs, and `CommandRunner` starts nothing in a cancelled task. What has to be
+/// done whatever happens to the test, such as unmounting the volume that is mounted in its folder, is done here.
+private func shielded<Value: Sendable>(_ operation: @escaping @Sendable () async -> Value) async -> Value {
+    await Task.detached(operation: operation).value
+}
+
+/// Makes a disk image of 10 MB with an HFS+ volume on it at `image`, and mounts it on the folder `mountPoint`. Returns
+/// what went wrong, if something did.
+private func mountDiskImage(_ image: String, on mountPoint: String) async -> (any Error)? {
+    do {
+        try await hdiutil("create", "-size", "10m", "-fs", "HFS+", "-volname", "Nested", image)
+        try await hdiutil("attach", "-nobrowse", "-noverify", "-noautofsck", "-mountpoint", mountPoint, image)
+        return nil
+    } catch {
+        // An attach that failed, or that did not finish in time, may have mounted the image all the same.
+        _ = try? await hdiutil(timeout: .seconds(15), "detach", "-force", mountPoint)
+        return error
+    }
+}
+
+/// Unmounts the volume at `mountPoint` and ejects its image: politely, and if something has it open (Spotlight, say) by
+/// force. Returns what went wrong, if something did.
+private func unmount(_ mountPoint: String) async -> (any Error)? {
+    do {
+        try await hdiutil(timeout: .seconds(15), "detach", mountPoint)
+        return nil
+    } catch {
+        do {
+            try await hdiutil(timeout: .seconds(15), "detach", "-force", mountPoint)
+            return nil
+        } catch {
+            return error
+        }
     }
 }
 
@@ -541,33 +656,38 @@ private extension TempDir {
     }
 
     /// Runs `body` while a volume of its own is mounted on the folder `path`, relative to this one: a disk image of 10
-    /// MB with an HFS+ volume on it. It is unmounted again however `body` ends, before this returns, so that the folder
-    /// can be deleted (what is mounted on it would be deleted with it). Where a disk image cannot be made or mounted,
-    /// the test is skipped, with the reason.
+    /// MB with an HFS+ volume on it. Where a disk image cannot be made or mounted, the test is skipped, with the
+    /// reason.
+    ///
+    /// The volume is unmounted before this returns, however `body` ends, and also when the test has been cancelled, by
+    /// a time limit say: the folder is deleted with the test, and what is mounted on it would be deleted with it. So
+    /// the commands run in tasks that a cancellation does not reach. Each has a timeout, 30 s to make the image and
+    /// 30 s to mount it, 15 s to unmount it and 15 s more to force that: 90 s at the most, which is within the two
+    /// minutes that the tests that use this give themselves.
     func withMountedVolume<Result>(at path: String, _ body: () throws -> Result) async throws -> Result {
         try makeDirectory(path)
         let image = url.appending(path: "volume.dmg").path
         let mountPoint = url.appending(path: path).path
-        do {
-            try await hdiutil("create", "-size", "10m", "-fs", "HFS+", "-volname", "Nested", image)
-            try await hdiutil("attach", "-nobrowse", "-noverify", "-noautofsck", "-mountpoint", mountPoint, image)
-        } catch {
-            try Test.cancel("A disk image cannot be mounted here: \(error)")
+
+        if let failure = await shielded({ await mountDiskImage(image, on: mountPoint) }) {
+            try Test.cancel("A disk image cannot be mounted here: \(failure)")
         }
         let outcome = Swift.Result { try body() }
-        do {
-            try await hdiutil("detach", mountPoint)
-        } catch {
-            try await hdiutil("detach", "-force", mountPoint)
+        if let failure = await shielded({ await unmount(mountPoint) }) {
+            if case .failure(let error) = outcome { Issue.record(error) }  // not to be hidden by the failure to unmount
+            throw failure
         }
         return try outcome.get()
     }
 
-    /// Measures `path`, relative to this folder, with a `PrivateSizeScanner`. A method of the `TempDir`, so that the
-    /// folder is there for as long as the walk runs.
+    /// Measures `path`, relative to this folder, with a `PrivateSizeScanner`, which finds out what kind of volume a
+    /// file is on with `lookUpVolume` if one is given. A method of the `TempDir`, so that the folder is there for as
+    /// long as the walk runs.
     func measure(
-        _ path: String, excluding excluded: Set<String> = [], isCancelled: @Sendable () -> Bool = { false }
+        _ path: String, excluding excluded: Set<String> = [], isCancelled: @Sendable () -> Bool = { false },
+        lookUpVolume: PrivateSizeScanner.VolumeLookup? = nil
     ) throws -> SizeInfo {
-        try PrivateSizeScanner().measure(url.appending(path: path), excluding: excluded, isCancelled: isCancelled)
+        let scanner = lookUpVolume.map { PrivateSizeScanner(lookUpVolume: $0) } ?? PrivateSizeScanner()
+        return try scanner.measure(url.appending(path: path), excluding: excluded, isCancelled: isCancelled)
     }
 }

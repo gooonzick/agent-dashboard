@@ -17,7 +17,8 @@ public protocol SizeMeasuring: Sendable {
     /// everything on that volume: removing the folder does not remove what is mounted on it.
     ///
     /// A folder below `root` that cannot be read is left out, and so is a file that goes away during the walk: the
-    /// result counts what could be read. A `root` that is not a folder that can be read throws a `POSIXError`.
+    /// result counts what could be read. A `root` that is not a folder that can be read and searched throws a
+    /// `POSIXError`.
     ///
     /// The walk is file system work that blocks its thread for as long as it takes: run it from a background task, at
     /// `.utility` priority or lower.
@@ -34,13 +35,27 @@ public protocol SizeMeasuring: Sendable {
 /// too low but are never too high:
 /// - A file with several hard links is counted once for `apparentBytes`, and frees nothing: removing one name leaves
 ///   the data to the other names, and they may lie outside the folder.
-/// - A file that its volume cannot say anything about frees nothing. The one exception is a volume that has no private
-///   sizes and is local and not APFS (HFS+ or exFAT, say): there are no clones there, so a file frees all that it
-///   takes. A network volume is no exception, because it can be an APFS volume of the server, with clones that this
-///   Mac cannot see.
+/// - A file on a volume that is not on this computer (a network share, say) frees nothing, whatever the volume says
+///   about it: such a volume can be an APFS volume of a server, with clones that this Mac cannot see, and what it says
+///   is about the file system of the server.
+/// - A file that its volume cannot say anything about frees nothing. The one exception is a volume on this computer
+///   that has no private sizes and is not APFS (HFS+ or exFAT, say): there are no clones there, so a file frees all
+///   that it takes.
 /// - Data that two files of the folder share is counted for neither, although removing both frees it.
 public struct PrivateSizeScanner: SizeMeasuring {
-    public init() {}
+    /// Tells what kind of volume the file at a path is on, or `nil` if it cannot say.
+    typealias VolumeLookup = @Sendable (UnsafePointer<CChar>) -> Volume?
+
+    private let lookUpVolume: VolumeLookup
+
+    public init() {
+        lookUpVolume = { Volume(at: $0) }
+    }
+
+    /// Not public: the tests cannot mount a network share to see what becomes of the files on one.
+    init(lookUpVolume: @escaping VolumeLookup) {
+        self.lookUpVolume = lookUpVolume
+    }
 
     public func measure(_ root: URL, excluding: Set<String>, isCancelled: @Sendable () -> Bool) throws -> SizeInfo {
         // The walk sees physical paths, so the paths that it is compared with have to be physical too. Looking up each
@@ -63,16 +78,23 @@ public struct PrivateSizeScanner: SizeMeasuring {
             guard let entry = fts_read(tree) else { break }
             let kind = Int32(entry.pointee.fts_info)
 
-            if entry.pointee.fts_level == 0, kind != FTS_D, kind != FTS_DP {
-                // `root` is gone, or is not a folder, or is one that cannot be read.
-                throw POSIXError(errno: entry.pointee.fts_errno == 0 ? ENOTDIR : entry.pointee.fts_errno)
+            if entry.pointee.fts_level == 0 {
+                if kind == FTS_D {
+                    // A folder that can be listed and not searched (r--) gives `fts` its names, and then every file
+                    // in it comes back as an error that is passed over below `root`: the result would be zero,
+                    // without a word.
+                    guard access(entry.pointee.fts_path, R_OK | X_OK) == 0 else { throw POSIXError(errno: errno) }
+                } else if kind != FTS_DP {
+                    // `root` is gone, or is not a folder, or is one that cannot be read.
+                    throw POSIXError(errno: entry.pointee.fts_errno == 0 ? ENOTDIR : entry.pointee.fts_errno)
+                }
             }
             switch kind {
             case FTS_D:
                 guard !Task.isCancelled, !isCancelled() else { throw CancellationError() }
                 if excluded.contains(String(cString: entry.pointee.fts_path)) { fts_set(tree, entry, FTS_SKIP) }
             case FTS_F:
-                tally.count(entry)
+                tally.count(entry, volumeAt: lookUpVolume)
             default:
                 // Below `root`, what is passed over: the end of a folder, a folder that cannot be read, a file that has
                 // gone away, a symlink, and whatever else is not a regular file.
@@ -94,17 +116,49 @@ extension PrivateSizeScanner {
         case failed(Int32)
     }
 
-    /// What deleting a file that takes `allocated` bytes frees, given the `answer` of its volume. `nil` for a file that
-    /// is gone: it takes nothing any more, so it is left out of the sums altogether.
+    /// What a volume is, as far as the numbers that it gives for a file can be believed.
+    enum Volume: Equatable {
+        /// An APFS volume on this computer. Its files can share data, and it says how much of a file is shared.
+        case apfs
+        /// A volume on this computer that is not APFS, HFS+ or exFAT say. Its files cannot share data.
+        case localWithoutClones
+        /// A volume that is not on this computer, such as a network share, or that could not be asked. It can be an
+        /// APFS volume of a server, with clones that this Mac cannot see, and what it says about a file is about the
+        /// file system of the server. Nothing that it says is believed, and nothing is counted for its files.
+        case untrusted
+
+        /// The kind of volume that `statfs` describes. `statfs` marks the volumes that are on this computer with
+        /// `MNT_LOCAL`.
+        init(_ info: statfs) {
+            guard info.f_flags & UInt32(MNT_LOCAL) != 0 else {
+                self = .untrusted
+                return
+            }
+            let fileSystem = withUnsafePointer(to: info.f_fstypename) { name in
+                name.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
+            }
+            self = fileSystem == "apfs" ? .apfs : .localWithoutClones
+        }
+
+        /// The kind of volume that the file at `path` is on, or `nil` if the volume cannot be asked.
+        init?(at path: UnsafePointer<CChar>) {
+            var info = statfs()
+            guard statfs(path, &info) == 0 else { return nil }
+            self.init(info)
+        }
+    }
+
+    /// What deleting a file that takes `allocated` bytes frees, given the kind of its `volume` and the `answer` that
+    /// the volume gives. `nil` for a file that is gone: it takes nothing any more, so it is left out of the sums
+    /// altogether.
     ///
-    /// `volumeMayShareData` is only asked when a volume has refused to give private sizes. A volume that is known not
-    /// to share data is the only one where the refusal means that a file frees all that it takes.
+    /// `answer` is only asked of a volume that is believed. An `untrusted` one is not asked: its files free nothing,
+    /// whatever it would say.
     ///
     /// Not private, because it holds decisions that the tests cannot provoke with a volume of every kind.
-    static func freedBytes(
-        allocated: Int64, answer: Answer, volumeMayShareData: @autoclosure () -> Bool
-    ) -> Int64? {
-        switch answer {
+    static func freedBytes(allocated: Int64, volume: Volume, answer: @autoclosure () -> Answer) -> Int64? {
+        if volume == .untrusted { return 0 }
+        switch answer() {
         case .bytes(let bytes):
             return bytes
         case .failed(let code) where code == ENOTSUP || code == EINVAL:
@@ -112,32 +166,13 @@ extension PrivateSizeScanner {
             // images, answer EINVAL: the attribute is not one that they have. APFS should have it. The attribute is in
             // a part of the system headers that is marked unstable, so if a later macOS stopped answering on APFS, the
             // numbers must not become those of `du`: nothing is known then, and nothing is counted.
-            return volumeMayShareData() ? 0 : allocated
+            return volume == .localWithoutClones ? allocated : 0
         case .failed(let code) where code == ENOENT || code == ENOTDIR:
             return nil
         case .failed:
             // Not known, so the lowest number that can be true.
             return 0
         }
-    }
-
-    /// Whether files on the volume that holds `path` can share their data: `false` only for a volume that is known not
-    /// to (see `mayShareData`), `true` for the rest, and for a volume that cannot be asked.
-    static func volumeMayShareData(at path: UnsafePointer<CChar>) -> Bool {
-        var info = statfs()
-        guard statfs(path, &info) == 0 else { return true }
-        return mayShareData(volume: info)
-    }
-
-    /// Whether files on a volume can share their data, given what `statfs` says about it. Only APFS has clones, so a
-    /// volume that is on this computer and is something else has none. A volume that is not on this computer (no
-    /// `MNT_LOCAL`), such as a network share, is no such volume: it can be an APFS volume of the server, with clones
-    /// that this Mac cannot see.
-    static func mayShareData(volume: statfs) -> Bool {
-        let fileSystem = withUnsafePointer(to: volume.f_fstypename) { name in
-            name.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
-        }
-        return fileSystem == "apfs" || volume.f_flags & UInt32(MNT_LOCAL) == 0
     }
 
     /// Asks the volume of the file at `path` for the private size of the file. A symlink is not followed.
@@ -168,12 +203,12 @@ extension PrivateSizeScanner {
         private(set) var freed: Int64 = 0
         /// The files with several hard links that were counted already.
         private var linked: Set<FileID> = []
-        /// Which of the volumes (`st_dev`) that files were found on can share data. A walk does not leave the volume of
+        /// What kind each of the volumes (`st_dev`) is that files were found on. A walk does not leave the volume of
         /// its root, so this hardly ever has more than one entry.
-        private var volumesThatMayShareData: [dev_t: Bool] = [:]
+        private var volumes: [dev_t: Volume] = [:]
 
         /// Counts `file`, a regular file.
-        mutating func count(_ file: UnsafeMutablePointer<FTSENT>) {
+        mutating func count(_ file: UnsafeMutablePointer<FTSENT>, volumeAt lookUpVolume: VolumeLookup) {
             // `fts` ran `lstat` on every file that it reports, and keeps what it found out. Every entry that it returns
             // has a path.
             let info = file.pointee.fts_statp.pointee
@@ -184,20 +219,24 @@ extension PrivateSizeScanner {
                 return
             }
             let path = file.pointee.fts_path!
-            let answer = PrivateSizeScanner.privateSize(ofFileAt: path)
+            let volume = kindOfVolume(on: info.st_dev, at: path, lookUp: lookUpVolume)
             guard
                 let own = PrivateSizeScanner.freedBytes(
-                    allocated: allocated, answer: answer, volumeMayShareData: mayShareData(on: info.st_dev, at: path))
+                    allocated: allocated, volume: volume, answer: PrivateSizeScanner.privateSize(ofFileAt: path))
             else { return }
             apparent += allocated
             freed += own
         }
 
-        private mutating func mayShareData(on device: dev_t, at path: UnsafePointer<CChar>) -> Bool {
-            if let known = volumesThatMayShareData[device] { return known }
-            let mayShare = PrivateSizeScanner.volumeMayShareData(at: path)
-            volumesThatMayShareData[device] = mayShare
-            return mayShare
+        /// What kind of volume `device` is, which holds the file at `path`. A volume that cannot be asked is not
+        /// believed for this file, and is asked again for the next.
+        private mutating func kindOfVolume(
+            on device: dev_t, at path: UnsafePointer<CChar>, lookUp: VolumeLookup
+        ) -> Volume {
+            if let known = volumes[device] { return known }
+            guard let volume = lookUp(path) else { return .untrusted }
+            volumes[device] = volume
+            return volume
         }
     }
 
