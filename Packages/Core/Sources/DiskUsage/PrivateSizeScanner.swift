@@ -13,6 +13,9 @@ public protocol SizeMeasuring: Sendable {
     /// `isCancelled` is asked once for every folder. When it says yes the walk stops and the call throws
     /// `CancellationError`. Cancelling the task that runs the walk has the same effect.
     ///
+    /// The walk stays on the volume of `root`. A folder below `root` that another volume is mounted on is left out with
+    /// everything on that volume: removing the folder does not remove what is mounted on it.
+    ///
     /// A folder below `root` that cannot be read is left out, and so is a file that goes away during the walk: the
     /// result counts what could be read. A `root` that is not a folder that can be read throws a `POSIXError`.
     ///
@@ -26,13 +29,15 @@ public protocol SizeMeasuring: Sendable {
 /// What deleting a file frees is its private size, which APFS gives through `getattrlist`
 /// (`ATTR_CMNEXT_PRIVATESIZE`): the bytes that no clone shares and no snapshot holds. `du` cannot tell the difference.
 ///
-/// Only regular files are counted. Symlinks are not followed, and they and the folders take nothing themselves. The
-/// numbers can be too low but are never too high:
+/// Only regular files are counted, and only those on the volume of the folder itself: a volume that is mounted inside
+/// it is not entered. Symlinks are not followed, and they and the folders take nothing themselves. The numbers can be
+/// too low but are never too high:
 /// - A file with several hard links is counted once for `apparentBytes`, and frees nothing: removing one name leaves
 ///   the data to the other names, and they may lie outside the folder.
 /// - A file that its volume cannot say anything about frees nothing. The one exception is a volume that has no private
-///   sizes and says that it is not APFS (HFS+ or exFAT, say): there are no clones there, so a file frees all that it
-///   takes.
+///   sizes and is local and not APFS (HFS+ or exFAT, say): there are no clones there, so a file frees all that it
+///   takes. A network volume is no exception, because it can be an APFS volume of the server, with clones that this
+///   Mac cannot see.
 /// - Data that two files of the folder share is counted for neither, although removing both frees it.
 public struct PrivateSizeScanner: SizeMeasuring {
     public init() {}
@@ -45,8 +50,9 @@ public struct PrivateSizeScanner: SizeMeasuring {
         guard let rootPath = strdup(canonicalPath(root.path)) else { throw POSIXError(errno: ENOMEM) }
         defer { free(rootPath) }
         // PHYSICAL: a symlink is reported, not followed. NOCHDIR: the walk does not change the working directory,
-        // which all threads of the app share.
-        guard let tree = fts_open([rootPath, nil], FTS_PHYSICAL | FTS_NOCHDIR, nil) else {
+        // which all threads of the app share. XDEV: a folder that has another volume mounted on it is reported, but not
+        // entered.
+        guard let tree = fts_open([rootPath, nil], FTS_PHYSICAL | FTS_NOCHDIR | FTS_XDEV, nil) else {
             throw POSIXError(errno: errno)
         }
         defer { fts_close(tree) }
@@ -91,8 +97,8 @@ extension PrivateSizeScanner {
     /// What deleting a file that takes `allocated` bytes frees, given the `answer` of its volume. `nil` for a file that
     /// is gone: it takes nothing any more, so it is left out of the sums altogether.
     ///
-    /// `volumeMayShareData` is only asked when a volume has refused to give private sizes. The volumes that are known
-    /// not to share data are the only ones where the refusal means that a file frees all that it takes.
+    /// `volumeMayShareData` is only asked when a volume has refused to give private sizes. A volume that is known not
+    /// to share data is the only one where the refusal means that a file frees all that it takes.
     ///
     /// Not private, because it holds decisions that the tests cannot provoke with a volume of every kind.
     static func freedBytes(
@@ -115,15 +121,23 @@ extension PrivateSizeScanner {
         }
     }
 
-    /// Whether files on the volume that holds `path` can share their data. Only APFS has clones, so this is `false` for
-    /// a volume that says that it is something else, and `true` for APFS and for a volume that cannot be asked.
+    /// Whether files on the volume that holds `path` can share their data: `false` only for a volume that is known not
+    /// to (see `mayShareData`), `true` for the rest, and for a volume that cannot be asked.
     static func volumeMayShareData(at path: UnsafePointer<CChar>) -> Bool {
         var info = statfs()
         guard statfs(path, &info) == 0 else { return true }
-        let type = withUnsafePointer(to: &info.f_fstypename) { name in
+        return mayShareData(volume: info)
+    }
+
+    /// Whether files on a volume can share their data, given what `statfs` says about it. Only APFS has clones, so a
+    /// volume that is on this computer and is something else has none. A volume that is not on this computer (no
+    /// `MNT_LOCAL`), such as a network share, is no such volume: it can be an APFS volume of the server, with clones
+    /// that this Mac cannot see.
+    static func mayShareData(volume: statfs) -> Bool {
+        let fileSystem = withUnsafePointer(to: volume.f_fstypename) { name in
             name.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
         }
-        return type == "apfs"
+        return fileSystem == "apfs" || volume.f_flags & UInt32(MNT_LOCAL) == 0
     }
 
     /// Asks the volume of the file at `path` for the private size of the file. A symlink is not followed.
@@ -154,7 +168,8 @@ extension PrivateSizeScanner {
         private(set) var freed: Int64 = 0
         /// The files with several hard links that were counted already.
         private var linked: Set<FileID> = []
-        /// Which of the volumes (`st_dev`) that files were found on can share data. A walk is on one volume, as a rule.
+        /// Which of the volumes (`st_dev`) that files were found on can share data. A walk does not leave the volume of
+        /// its root, so this hardly ever has more than one entry.
         private var volumesThatMayShareData: [dev_t: Bool] = [:]
 
         /// Counts `file`, a regular file.

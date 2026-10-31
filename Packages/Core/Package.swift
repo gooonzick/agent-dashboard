@@ -33,6 +33,7 @@ let package = Package(
             name: "HostingTests", dependencies: ["Hosting", "CoreModels", "Shell"], resources: [.copy("Fixtures")],
             swiftSettings: strict),
         .testTarget(
-            name: "DiskUsageTests", dependencies: ["DiskUsage", "CoreModels", "TestSupport"], swiftSettings: strict),
+            name: "DiskUsageTests", dependencies: ["DiskUsage", "CoreModels", "Shell", "TestSupport"],
+            swiftSettings: strict),
     ]
 )

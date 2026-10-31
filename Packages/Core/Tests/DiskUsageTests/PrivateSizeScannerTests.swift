@@ -1,5 +1,6 @@
 import CoreModels
 import Foundation
+import Shell
 import Synchronization
 import TestSupport
 import Testing
@@ -207,6 +208,28 @@ private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
         #expect(size.privateBytes == 0)
     }
 
+    @Test(.timeLimit(.minutes(2)))
+    func doesNotLookInsideAVolumeThatIsMountedInTheFolder() async throws {
+        // Removing a folder does not remove what is mounted on it, and such a volume may be a network share, or a disk
+        // that is slow. Xcode mounts its simulator runtimes this way, under /Library/Developer.
+        let tmp = try TempDir(named: "My Projects")
+        try tmp.makeFile("inside/own.bin")
+
+        let (folder, onTheVolume) = try await tmp.withMountedVolume(at: "inside/mounted") {
+            try tmp.makeFile("inside/mounted/folder/on-the-volume.bin")
+            let folderDevice = try device(ofItemAt: tmp.url.appending(path: "inside").path)
+            let volumeDevice = try device(ofItemAt: tmp.url.appending(path: "inside/mounted").path)
+            try #require(volumeDevice != folderDevice, "the disk image is not on a device of its own")
+            // The same walk, started on the other volume, is on one volume all the way.
+            return (try tmp.measure("inside"), try tmp.measure("inside/mounted/folder"))
+        }
+
+        #expect(isAbout(1, folder.apparentBytes))  // own.bin, and nothing of what is on the volume
+        #expect(isAbout(1, folder.privateBytes))
+        #expect(isAbout(1, onTheVolume.apparentBytes))  // the file on the volume, the walk's own volume
+        #expect(isAbout(1, onTheVolume.privateBytes))  // a local volume that is not APFS: no clones, all of it is freed
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func doesNotFollowSymlinks() throws {
         let tmp = try TempDir(named: "My Projects")
@@ -375,6 +398,18 @@ private func isAbout(_ mebibytes: Int, _ bytes: Int64) -> Bool {
         #expect(PrivateSizeScanner.volumeMayShareData(at: "/no/such/place"))  // it cannot be asked: not ruled out
     }
 
+    @Test(arguments: [
+        // A volume that is on this computer and not APFS is the only one that is known not to share data.
+        ("hfs", true, false), ("exfat", true, false), ("msdos", true, false), ("devfs", true, false),
+        // APFS, and anything that is not on this computer, may: a network volume can be an APFS volume of the server,
+        // with clones that this Mac cannot see.
+        ("apfs", true, true), ("apfs", false, true), ("smbfs", false, true), ("nfs", false, true),
+        ("afpfs", false, true), ("autofs", false, true), ("hfs", false, true),
+    ])
+    func onlyALocalVolumeThatIsNotAPFSIsKnownNotToShareData(fileSystem: String, isLocal: Bool, mayShare: Bool) {
+        #expect(PrivateSizeScanner.mayShareData(volume: statfs(fileSystem: fileSystem, isLocal: isLocal)) == mayShare)
+    }
+
     @Test func askingAboutASymlinkIsAskingAboutTheSymlinkNotWhatItPointsTo() throws {
         // A file that is replaced by a symlink while the walk runs must not be measured as the file that it points
         // to: that one could lie anywhere, and be large.
@@ -415,6 +450,44 @@ private final class CallCounter: Sendable {
 /// that volume can share data; like the argument of `freedBytes` it is only worked out when it is needed.
 private func freed(_ answer: PrivateSizeScanner.Answer, mayShare: @autoclosure () -> Bool) -> Int64? {
     PrivateSizeScanner.freedBytes(allocated: 8192, answer: answer, volumeMayShareData: mayShare())
+}
+
+extension statfs {
+    /// What `statfs` says about a volume with the file system `fileSystem`, which is on this computer or not. `statfs`
+    /// marks the volumes that are with MNT_LOCAL; no other flag may matter, so some are set.
+    fileprivate init(fileSystem: String, isLocal: Bool) {
+        self.init()
+        withUnsafeMutableBytes(of: &f_fstypename) { name in
+            _ = strlcpy(name.baseAddress!.assumingMemoryBound(to: CChar.self), fileSystem, name.count)
+        }
+        f_flags = UInt32(MNT_RDONLY | MNT_NOSUID) | (isLocal ? UInt32(MNT_LOCAL) : 0)
+    }
+}
+
+/// The device that the item at `path` is on, the way `st_dev` says. Each mounted volume has its own.
+private func device(ofItemAt path: String) throws -> dev_t {
+    var info = stat()
+    try posix(lstat(path, &info))
+    return info.st_dev
+}
+
+/// A command that did not exit with 0.
+private struct CommandFailure: Error, CustomStringConvertible {
+    let command: String
+    let exitCode: Int32
+    let output: String
+
+    var description: String { "\(command) exited with \(exitCode): \(output)" }
+}
+
+/// Runs `hdiutil <arguments>`, and throws what it printed if it fails.
+private func hdiutil(_ arguments: String...) async throws {
+    let result = try await CommandRunner().run("hdiutil", arguments, in: nil, timeout: .seconds(60))
+    guard result.exitCode == 0 else {
+        throw CommandFailure(
+            command: "hdiutil " + arguments.joined(separator: " "), exitCode: result.exitCode,
+            output: result.stdout + result.stderr)
+    }
 }
 
 /// Fails the test, with the reason, if a system call that returns 0 when it works did not.
@@ -465,6 +538,29 @@ private extension TempDir {
         let copy = url.appending(path: path)
         try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
         try posix(clonefile(url.appending(path: existing).path, copy.path, 0))
+    }
+
+    /// Runs `body` while a volume of its own is mounted on the folder `path`, relative to this one: a disk image of 10
+    /// MB with an HFS+ volume on it. It is unmounted again however `body` ends, before this returns, so that the folder
+    /// can be deleted (what is mounted on it would be deleted with it). Where a disk image cannot be made or mounted,
+    /// the test is skipped, with the reason.
+    func withMountedVolume<Result>(at path: String, _ body: () throws -> Result) async throws -> Result {
+        try makeDirectory(path)
+        let image = url.appending(path: "volume.dmg").path
+        let mountPoint = url.appending(path: path).path
+        do {
+            try await hdiutil("create", "-size", "10m", "-fs", "HFS+", "-volname", "Nested", image)
+            try await hdiutil("attach", "-nobrowse", "-noverify", "-noautofsck", "-mountpoint", mountPoint, image)
+        } catch {
+            try Test.cancel("A disk image cannot be mounted here: \(error)")
+        }
+        let outcome = Swift.Result { try body() }
+        do {
+            try await hdiutil("detach", mountPoint)
+        } catch {
+            try await hdiutil("detach", "-force", mountPoint)
+        }
+        return try outcome.get()
     }
 
     /// Measures `path`, relative to this folder, with a `PrivateSizeScanner`. A method of the `TempDir`, so that the
