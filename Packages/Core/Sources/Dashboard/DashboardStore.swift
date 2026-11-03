@@ -46,6 +46,9 @@ struct Repository {
     public private(set) var projects: [ProjectRow] = []
     public private(set) var scanState: ScanState = .idle
     public private(set) var lastUpdated: Date?
+    /// Whether `start()` is running, from the first line of it to the last: a second `start()` in that time does
+    /// nothing, so the window waits for this to be `false` before it offers one.
+    public private(set) var isStarting = false
 
     /// Whether the window is on the screen. The processes are sampled every 3 seconds while it is, and not at all while
     /// it is not.
@@ -80,7 +83,6 @@ struct Repository {
     @ObservationIgnored var pendingEvents: [(stream: WatchStream, paths: [String])] = []
     @ObservationIgnored var eventWorker: Task<Void, Never>?
     @ObservationIgnored var ticket = 0
-    @ObservationIgnored var isStarting = false
     @ObservationIgnored var cacheLoaded = false
     /// What the watcher added and removed while a scan was under way: the scan's answer may be older.
     @ObservationIgnored var changesDuringScan: RepositoryChanges?
