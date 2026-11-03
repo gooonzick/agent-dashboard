@@ -218,18 +218,21 @@ struct PretendScene {
 
     static let repo = URL(filePath: "/work/repo")
 
-    /// `listed` says how git lists the worktree if that is not how it is requested: it has changed since.
+    /// `listed` says how git lists the worktree if that is not how it is requested: it has changed since. `inside` are
+    /// the names of other worktrees that git lists in the folder of this one.
     init(
         lock: WorktreeLock? = nil, isDetached: Bool = false, tip: String? = pretendHead, tracked: String = "",
-        listed: (Worktree) -> Worktree = { $0 },
+        inside: [String] = [], listed: (Worktree) -> Worktree = { $0 },
         answer: @escaping @Sendable ([String]) async -> CommandResult? = { _ in nil }
     ) throws {
         folder = try TempDir(named: "My Projects")
         worktree = Worktree(
             path: folder.canonicalPath, head: pretendHead, branch: "b", isDetached: isDetached, lock: lock)
         let main = Worktree(path: "/work/repo", head: pretendHead, branch: "main", isMain: true)
+        let path = folder.canonicalPath
+        let inner = inside.map { Worktree(path: path + "/" + $0, head: pretendHead, branch: $0) }
         runner = WatchedRunner(
-            pretending: PretendRepository(worktrees: [main, listed(worktree)], tip: tip, tracked: tracked),
+            pretending: PretendRepository(worktrees: [main, listed(worktree)] + inner, tip: tip, tracked: tracked),
             answer: answer)
     }
 

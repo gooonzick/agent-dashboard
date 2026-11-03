@@ -412,6 +412,62 @@ extension WorktreeRemoverTests {
             #expect(reason.contains("one.txt") && reason.contains("2 more"), "\(reason)")
         }
 
+        @Test func aFileWhoseNameStartsWithACombiningMarkIsFoundOnTheDisk() async throws {
+            // As `Character`s, the space after the tag and the mark are one, and the name would lose its mark: a file
+            // that is there would be taken for one that a sparse checkout left out.
+            let name = "\u{301}x.txt"
+            let scene = try PretendScene(tracked: "S \(name)\0")
+            try "edited\n".write(to: scene.folder.url.appending(path: name), atomically: true, encoding: .utf8)
+
+            let error = await #expect(throws: RemovalError.self) {
+                try await remover(for: scene).remove(scene.request(), recheck: stillReady)
+            }
+
+            guard case .hiddenWork(let reason)? = error else {
+                Issue.record("expected RemovalError.hiddenWork, got \(String(describing: error))")
+                return
+            }
+            #expect(reason.unicodeScalars.contains("\u{301}"), "\(reason)")
+            #expect(scene.runner.writes.isEmpty)
+        }
+
+        @Test func aWorktreeInsideWhoseNameStartsWithACombiningMarkIsFound() async throws {
+            // As `Character`s, `<folder>/` and the mark are one, and the path would not seem to start with the folder.
+            let scene = try PretendScene(inside: ["\u{301}agent"])
+
+            let error = await #expect(throws: RemovalError.self) {
+                try await remover(for: scene).remove(scene.request(), recheck: stillReady)
+            }
+
+            guard case .hiddenWork(let reason)? = error else {
+                Issue.record("expected RemovalError.hiddenWork, got \(String(describing: error))")
+                return
+            }
+            #expect(reason.unicodeScalars.contains("\u{301}"), "\(reason)")
+            #expect(scene.runner.writes.isEmpty)
+        }
+
+        @Test func aSkippedFileInAFolderThatCannotBeLookedIntoCountsAsThere() async throws {
+            let scene = try PretendScene(tracked: "S locked/notes.txt\0")
+            let locked = scene.folder.url.appending(path: "locked", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+            try "edited\n".write(to: locked.appending(path: "notes.txt"), atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+            // Before the folder of the scene is removed, which needs it open.
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+
+            let error = await #expect(throws: RemovalError.self) {
+                try await remover(for: scene).remove(scene.request(), recheck: stillReady)
+            }
+
+            guard case .hiddenWork(let reason)? = error else {
+                Issue.record("expected RemovalError.hiddenWork, got \(String(describing: error))")
+                return
+            }
+            #expect(reason.contains("locked/notes.txt"), "\(reason)")
+            #expect(scene.runner.writes.isEmpty)
+        }
+
         /// A remover that stops nothing, as no process is to be stopped, on the stand-in for git of `scene`.
         private func remover(for scene: PretendScene) -> WorktreeRemover {
             WorktreeRemover(

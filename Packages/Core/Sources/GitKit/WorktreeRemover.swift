@@ -257,25 +257,39 @@ public struct WorktreeRemover: WorktreeRemoving {
     /// `git ls-files -v` is a lowercase letter, and an edit to one is invisible. Those marked `skip-worktree` (tag `S`)
     /// count if the file is on the disk, for then it may be edited. A sparse checkout leaves such files out, and a file
     /// that is not there holds nothing.
+    ///
+    /// Paths and entries are looked at as Unicode scalars, as git's output is in `GitParsers`: as `Character`s, the
+    /// `/` or the space before a name that starts with a combining mark makes one `Character` with it, and the name
+    /// would neither start with the folder nor come after its tag.
     private func refuseHiddenWork(in worktree: Worktree, among listing: [Worktree]) async throws {
-        let prefix = worktree.path + "/"
-        if let inner = listing.first(where: { $0.path.hasPrefix(prefix) }) {
-            throw RemovalError.hiddenWork("another worktree is inside this one: \(inner.path.dropFirst(prefix.count))")
+        let prefix = (worktree.path + "/").unicodeScalars
+        if let inner = listing.first(where: { $0.path.unicodeScalars.starts(with: prefix) }) {
+            let name = String(inner.path.unicodeScalars.dropFirst(prefix.count))
+            throw RemovalError.hiddenWork("another worktree is inside this one: \(name)")
         }
 
         let tracked = try await git(["ls-files", "-v", "-z"], in: URL(filePath: worktree.path))
         guard tracked.exitCode == 0 else { throw RemovalError.gitRefused(tracked.message) }
-        let hidden = tracked.stdout.split(separator: "\0").compactMap { entry -> String? in
+        // `<tag> <path>`, each ended by a NUL.
+        let hidden = tracked.stdout.unicodeScalars.split(separator: "\0").compactMap { entry -> String? in
             guard let tag = entry.first else { return nil }
             let file = String(entry.dropFirst(2))
-            if tag.isLowercase { return file }
-            let onDisk = (try? FileManager.default.attributesOfItem(atPath: prefix + file)) != nil
-            return tag == "S" && onDisk ? file : nil
+            if tag.properties.isLowercase { return file }
+            return tag == "S" && Self.mayBeOnDisk(worktree.path + "/" + file) ? file : nil
         }
         if let first = hidden.first {
             let others = hidden.count > 1 ? " and \(hidden.count - 1) more" : ""
             throw RemovalError.hiddenWork("git is told not to look for changes in \(first)\(others)")
         }
+    }
+
+    /// Whether something may be at `path`. Only `lstat` saying that there is no such file, or that a folder on the way
+    /// is none, says that nothing is there: a folder that cannot be looked into may hold the file all the same, and
+    /// what cannot be looked at is not taken for nothing.
+    private static func mayBeOnDisk(_ path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) != 0 else { return true }
+        return errno != ENOENT && errno != ENOTDIR
     }
 
     /// Checks that `branch` is still at `commit`, the commit that the worktree had. `git branch -D` takes the reflog of
