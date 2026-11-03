@@ -113,7 +113,11 @@ public struct AccountItem: Equatable, Identifiable, Sendable {
         // The token is read to see that it is there, and dropped. A store that cannot be read is not an empty one.
         var storeError: String?
         var hasToken = false
-        do { hasToken = try tokens.token(for: host) != nil } catch { storeError = "The Keychain could not be read." }
+        do { hasToken = try tokens.token(for: host) != nil } catch {
+            // The reason says what the Keychain answered (a status, never the token), which is what tells a denied
+            // access from a damaged entry.
+            storeError = "The Keychain could not be read: \((error as? LocalizedError)?.errorDescription ?? "\(error)")"
+        }
         let tool: String? =
             switch kind {
             case .gitlab: "glab"
