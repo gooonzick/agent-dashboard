@@ -69,6 +69,7 @@ final class FakeGit: GitReading {
         }
     }
     func forget(_ path: String) { state.withLock { $0.repos[path] = nil } }
+    func repo(_ path: String) -> Repo? { state.withLock { $0.repos[path] } }
 
     var calls: [Call] { state.withLock { $0.calls } }
     var maxRunning: Int { state.withLock { $0.maxRunning } }

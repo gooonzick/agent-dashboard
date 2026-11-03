@@ -257,7 +257,18 @@ struct Repository {
 
     private func apply(_ snapshot: RepositorySnapshot, to path: String, ticket: Int) {
         guard var repo = repositories[path], ticket > repo.listTicket else { return }
-        let worktrees = snapshot.worktrees ?? []
+        guard let worktrees = snapshot.worktrees else {
+            // Git could not list them this time, which says nothing of whether they are there: the rows and their sizes
+            // stay as they were, and nothing that was read of them before is taken for true now.
+            repo.listTicket = ticket
+            for worktree in repo.worktrees {
+                repo.facts[worktree.path] = nil
+                repo.factTickets[worktree.path] = ticket
+            }
+            repositories[path] = repo
+            publish()
+            return
+        }
         let listed = Set(worktrees.map(\.path))
         for gone in repo.worktrees.map(\.path) where !listed.contains(gone) && gone != path {
             sizes[gone] = nil

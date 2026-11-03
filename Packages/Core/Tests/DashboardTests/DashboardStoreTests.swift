@@ -46,6 +46,28 @@ import Testing
         #expect(Reader.describe(GitError.failed(command: "git status", exitCode: 3, stderr: "")) == "git exited with 3")
     }
 
+    @Test func aListOfWorktreesThatGitCannotGiveKeepsTheRowsAndTheirSizes() async throws {
+        let scene = try Scene()
+        scene.addRepository("/x/repo", worktrees: [linked("/x/wt", branch: "b")])
+        let store = await scene.startedStore()
+        let size = try #require(store.row("/x/wt")?.size)
+        let repo = try #require(scene.git.repo("/x/repo"))
+
+        scene.git.forget("/x/repo")  // every command fails: a repository that is busy, or a git that is broken
+        await store.refresh()
+        await scene.settle(store)
+
+        #expect(store.projects.map(\.path) == ["/x/repo"])
+        #expect(store.row("/x/wt")?.size == size)
+        // Nothing that was read before is taken for true: the status is not known now.
+        #expect(store.row("/x/wt")?.status == nil)
+        #expect(store.row("/x/wt")?.eligibility == .blocked([.statusUnavailable]))
+
+        scene.git.set("/x/repo", repo)
+        await store.refresh()
+        #expect(store.row("/x/wt")?.status == cleanAndPushed)
+    }
+
     @Test func readyContainsOnlyMergedClean() async throws {
         let scene = try Scene()
         let mergedClean = linked("/x/wt-a", branch: "a")
