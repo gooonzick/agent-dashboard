@@ -4,6 +4,7 @@ import GitKit
 import Hosting
 import ProcessKit
 import Safety
+import Shell
 
 /// What git says about a worktree, besides the entry of `git worktree list`: the facts that `RemovalPolicy` decides on.
 struct GitFacts: Sendable, Equatable {
@@ -14,6 +15,8 @@ struct GitFacts: Sendable, Equatable {
     var commitsNotOnAnyRemote: Int?
     /// Only found out when the request is merged and the branch has no live upstream.
     var headContainedInReview: Bool?
+    /// Why `status` is `nil` when git failed to read it: what it said, for the inspector (`Reader.describe`).
+    var statusError: String?
 
     /// The facts for the policy. A stash list that could not be read leaves the facts without a status: that blocks,
     /// and never with a made-up count.
@@ -77,8 +80,13 @@ struct Reader: Sendable {
     func facts(of worktree: Worktree, in repo: String, review: ReviewInfo) async -> GitFacts {
         guard !worktree.isPrunable else { return GitFacts() }
         let folder = URL(filePath: worktree.path, directoryHint: .isDirectory)
-        let status = try? await gitLimit.run { try await git.status(worktree: folder) }
-        guard !worktree.isMain, let status else { return GitFacts(status: status) }
+        let status: WorktreeStatus
+        do {
+            status = try await gitLimit.run { try await git.status(worktree: folder) }
+        } catch {
+            return GitFacts(statusError: Self.describe(error))
+        }
+        guard !worktree.isMain else { return GitFacts(status: status) }
 
         let repoURL = URL(filePath: repo, directoryHint: .isDirectory)
         // Git cannot tell which detached worktree made a stash on `(no branch)`: it counts for each of them.
@@ -169,6 +177,30 @@ struct Reader: Sendable {
     }
 
     // MARK: Helpers
+
+    /// What a failure to read the status says, in one line for the inspector: the first line of what git printed
+    /// ("fatal: detected dubious ownership in repository at '…'"), or what went wrong in running it.
+    ///
+    /// It is git's error output for `status` and `log` in a folder on this Mac, which name the folder and no remote. A
+    /// URL is cut down to the part after its credentials all the same, should one ever be in it: what is shown may be
+    /// read over a shoulder or in a screenshot.
+    static func describe(_ error: any Error) -> String {
+        let text: String
+        switch error {
+        case GitError.failed(_, let exitCode, let stderr):
+            let first = stderr.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+            text = first.isEmpty ? "git exited with \(exitCode)" : first
+        case GitError.unexpectedOutput:
+            text = "git printed something that could not be read"
+        case CommandError.notFound(let tool):
+            text = "\(tool) was not found"
+        case CommandError.timedOut(let tool):
+            text = "\(tool) did not finish in time"
+        default:
+            text = (error as? any LocalizedError)?.errorDescription ?? String(describing: error)
+        }
+        return text.replacing(/:\/\/[^\/\s@]*@/, with: "://")
+    }
 
     /// The remote of `origin`, or the first one if there is no `origin`, read as an address on a hosting service. The
     /// URL itself is not kept: it can hold a token.

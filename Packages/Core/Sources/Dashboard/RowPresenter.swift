@@ -37,7 +37,7 @@ public enum RowPresenter {
         case .blocked(let reasons):
             return reasons.map { StateChip(text: text(of: $0), warning: true) }
         case .mainWorktree:
-            guard let status = row.status else { return [StateChip(text: "Can't verify", warning: true)] }
+            guard let status = row.status else { return [StateChip(text: cantVerify, warning: true)] }
             var chips: [StateChip] = []
             if status.modified > 0 { chips.append(StateChip(text: changes(status.modified), warning: true)) }
             if status.untracked > 0 { chips.append(StateChip(text: "\(status.untracked) untracked", warning: true)) }
@@ -56,16 +56,23 @@ public enum RowPresenter {
         // The commits that came after the merge are on no remote branch that the merge holds.
         case .notOnRemote, .commitsAfterMerge: "Not on remote"
         case .lockedManually: "Locked"
-        case .cantVerify, .statusUnavailable: "Can't verify"
+        case .cantVerify, .statusUnavailable: cantVerify
         }
     }
 
     private static func changes(_ n: Int) -> String { n == 1 ? "1 change" : "\(n) changes" }
 
-    /// The Changes line of the inspector: what the chips of the State column say, in one line.
+    /// The Changes line of the inspector: what the chips of the State column say, in one line. When git could not read
+    /// the status, what it said follows `Can't verify`: the table has no room for it, the inspector has.
     public static func changesLine(_ row: WorktreeRow) -> String {
-        stateChips(row).map(\.text).joined(separator: ", ")
+        let error = row.status == nil ? row.statusError : nil
+        return stateChips(row).map { chip in
+            guard let error, chip.text == cantVerify else { return chip.text }
+            return "\(cantVerify): \(error)"
+        }.joined(separator: ", ")
     }
+
+    private static let cantVerify = "Can't verify"
 
     /// What runs in a worktree, for the Running column: the groups without the shells, the most memory first, the same
     /// name once with `×N`, then the memory of all the groups, shells included. `nil` when there is nothing but shells.

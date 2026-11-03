@@ -49,6 +49,17 @@ import Testing
         #expect(RowPresenter.changesLine(row(.missing)) == "Missing")
     }
 
+    @Test func theChangesLineSaysWhyTheStatusCannotBeRead() {
+        let error = "fatal: detected dubious ownership in repository at '/r'"
+        let main = row(.mainWorktree, statusError: error)
+        #expect(RowPresenter.stateChips(main).map(\.text) == ["Can't verify"])  // the table has no room for it
+        #expect(RowPresenter.changesLine(main) == "Can't verify: " + error)
+        let linked = row(.blocked([.statusUnavailable]), statusError: error)
+        #expect(RowPresenter.changesLine(linked) == "Can't verify: " + error)
+        // An error that no longer stands, once the status is read, is not shown.
+        #expect(RowPresenter.changesLine(row(.mainWorktree, status: WorktreeStatus(), statusError: error)) == "Clean")
+    }
+
     @Test func aMainWorktreeShowsWhatGitSays() {
         let dirty = WorktreeStatus(modified: 2, untracked: 1)
         #expect(
@@ -260,10 +271,12 @@ private func status(ahead: Int, behind: Int) -> WorktreeStatus {
     WorktreeStatus(upstream: "origin/main", ahead: ahead, behind: behind)
 }
 
-private func row(_ eligibility: RemovalEligibility, status: WorktreeStatus? = nil) -> WorktreeRow {
+private func row(_ eligibility: RemovalEligibility, status: WorktreeStatus? = nil, statusError: String? = nil)
+    -> WorktreeRow
+{
     WorktreeRow(
         repoPath: "/r", repoName: "r", worktree: Worktree(path: "/r/w", branch: "x"), status: status, review: .none,
-        hosting: nil, groups: [], size: nil, eligibility: eligibility)
+        hosting: nil, groups: [], size: nil, eligibility: eligibility, statusError: statusError)
 }
 
 private func group(_ kind: ProcessKind, _ title: String, name: String, footprint: UInt64) -> ProcessGroup {

@@ -25,10 +25,14 @@ public struct WorktreeRow: Sendable, Equatable, Identifiable {
     /// What the folder takes and what removing it frees. `nil` until it has been measured.
     public let size: SizeInfo?
     public let eligibility: RemovalEligibility
+    /// What git said when it could not read the status, for people to read: the first line of its error output, as
+    /// `GitFacts.statusError` keeps it. `nil` when the status was read, or has not been yet.
+    public let statusError: String?
 
     public init(
         repoPath: String, repoName: String, worktree: Worktree, status: WorktreeStatus?, review: ReviewInfo,
-        hosting: HostingKind?, groups: [ProcessGroup], size: SizeInfo?, eligibility: RemovalEligibility
+        hosting: HostingKind?, groups: [ProcessGroup], size: SizeInfo?, eligibility: RemovalEligibility,
+        statusError: String? = nil
     ) {
         self.repoPath = repoPath
         self.repoName = repoName
@@ -39,6 +43,7 @@ public struct WorktreeRow: Sendable, Equatable, Identifiable {
         self.groups = groups
         self.size = size
         self.eligibility = eligibility
+        self.statusError = statusError
     }
 }
 

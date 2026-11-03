@@ -387,7 +387,7 @@ struct Repository {
         return WorktreeRow(
             repoPath: repo.path, repoName: repo.name, worktree: worktree, status: facts.status, review: review,
             hosting: repo.remote == nil ? nil : repo.kind, groups: running, size: sizes[worktree.path],
-            eligibility: eligibility)
+            eligibility: eligibility, statusError: facts.statusError)
     }
 
     /// Whether nothing that the store started on its own is still going: no watcher event on its way or being

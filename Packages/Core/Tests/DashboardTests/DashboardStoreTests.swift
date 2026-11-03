@@ -26,6 +26,26 @@ import Testing
         #expect(store.projects.count == 2)  // a scan that was given up on removes nothing
     }
 
+    @Test func whatGitSaysWhenItCannotReadAStatusIsKeptForTheInspector() async throws {
+        let scene = try Scene()
+        scene.addRepository("/x/repo", worktrees: [linked("/x/wt", branch: "b")])
+        scene.git.update("/x/repo") { $0.statuses["/x/repo"] = nil }  // git fails with "fake failure"
+
+        let store = await scene.startedStore()
+
+        #expect(store.row("/x/repo")?.status == nil)
+        #expect(store.row("/x/repo")?.statusError == "fake failure")
+        #expect(store.row("/x/wt")?.statusError == nil)
+    }
+
+    @Test func theErrorOfAStatusNamesNoCredentials() {
+        let error = GitError.failed(
+            command: "git status", exitCode: 128,
+            stderr: "fatal: could not read https://deploy:glpat-SECRET@gitlab.example.test/team/app.git\nmore")
+        #expect(Reader.describe(error) == "fatal: could not read https://gitlab.example.test/team/app.git")
+        #expect(Reader.describe(GitError.failed(command: "git status", exitCode: 3, stderr: "")) == "git exited with 3")
+    }
+
     @Test func readyContainsOnlyMergedClean() async throws {
         let scene = try Scene()
         let mergedClean = linked("/x/wt-a", branch: "a")
