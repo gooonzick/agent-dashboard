@@ -819,3 +819,35 @@ Settings, вкладка Scan: список исключённых путей (+
 - [ ] **Step 2: Build Release locally.** `xcodebuild -project AgentDashboard.xcodeproj -scheme AgentDashboard -configuration Release -destination 'platform=macOS' build CODE_SIGN_IDENTITY=-`. Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 3: Check against reality, read only, nothing is removed.** Запустить приложение и сверить с разведкой из спеки: найдены репозитории из `~/Development` (22 на 2026-10-30) и их worktree; у worktree dashboard статусы MR с `gitlab.diftech.org`; Real size у worktree dashboard — десятые доли гигабайта, а не ~3 GB; сессии Claude Code привязаны к своим worktree; `aura/.claude/worktrees/test-perf-stability-audit` показан как Locked; приложение в простое не грузит CPU (Activity Monitor, < 1 % за минуту) и занимает < 150 MB памяти.
 - [ ] **Step 4: Record results and commit.** `docs: record verification results for part 1`
+
+## Результат проверки
+
+Проверено на этом маке 2026-11-03 (macOS 27.2, Xcode 27.2), сборка Release с HEAD `1741be9`, подпись ad-hoc.
+
+**Пройдено**
+- Тесты: 676 PASS (рендеры за `AD_RENDER_TESTS=1` не запускались). Release: `** BUILD SUCCEEDED **`.
+- Первый запуск: окно онбординга, запросы macOS на Desktop/Documents/Downloads, `Import from glab` для `gitlab.diftech.org` — сделал пользователь.
+- Найдено 26 репозиториев и 36 worktree; у dashboard 15 worktree.
+- Статусы MR с `gitlab.diftech.org` после импорта токена: 12 в Ready to remove, освобождают 6.3 GB.
+- Real size у worktree dashboard — 0.2–0.5 GB.
+- Сессии Claude Code привязаны к своим worktree (agent-dashboard: Claude · 664 MB).
+- Память в простое 67–82 MB (цель < 150 MB).
+- Приложение замечает репозиторий, который появился или пропал, без пересканирования (проверено на одноразовом `~/ad-removal-test`).
+
+**Не пройдено**
+- CPU в простое: 7.6 % (4.56 с за 60 с) на прошлой сборке, 6.0 % (7.16 с за 120 с) на `1741be9` — цель < 1 %. Около 75 % — повторный замер размера изменившихся worktree (`sizeInterval = 30` с, полный обход `node_modules`), около 10 % — обработка событий корней сканирования. Отдано в финальное ревью.
+- Первый проход замера размеров держит одно ядро на ~97 % несколько минут; размеры попадают в кэш только когда очередь пуста.
+
+**Исправлено по ходу проверки**
+- `d4647bd`: спиннеру в тулбаре тесно; текст футера диска не читается поверх списка.
+- `8cb7947`: Accounts показывает, что ответил Keychain, вместо общего «could not be read».
+- `1d7cb60`, `1741be9`: отступы по макету; блок Ready на Projects ограничен 4 строками, отдельная страница показывает все.
+
+**Не проверено руками**
+- Удаление кликом в окне: одноразовый worktree удалён через git, а не через приложение. Путь кнопки Remove покрыт только интеграционным тестом из Task 14.
+- Тёмная тема, Reduce transparency, Increase contrast, ↑/↓ и ←/→ в таблице, ⌘⌫ после поиска.
+- `aura/.claude/worktrees/test-perf-stability-audit` как Locked.
+
+**Замечания**
+- Каждая ad-hoc пересборка меняет cdhash, и Keychain снова спрашивает доступ («Always Allow»). Пересборка поверх запущенного приложения однажды сломала ему доступ к токену.
+- Главные worktree с detached HEAD (claude-code-warp, context-mode, karpathy-skills) показывают `Can't verify` вместо своих статусов.
