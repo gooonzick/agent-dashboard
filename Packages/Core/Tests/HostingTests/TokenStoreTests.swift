@@ -21,7 +21,14 @@ private func scrub(_ host: String, service: String = testService) {
     SecItemDelete(entry as CFDictionary)
 }
 
-@Suite(.timeLimit(.minutes(1))) struct TokenStoreTests {
+/// These tests write the login Keychain of whoever runs them (under a service of their own, which they scrub), so they
+/// are off unless the environment has `AD_KEYCHAIN_TESTS=1`:
+///
+///     AD_KEYCHAIN_TESTS=1 swift test --package-path Packages/Core --filter TokenStoreTests
+///
+/// The Keychain may ask once for the login password, or for "Always Allow", for the test runner.
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["AD_KEYCHAIN_TESTS"] == "1"), .timeLimit(.minutes(1)))
+struct TokenStoreTests {
     // Each test scrubs what it stored in a `defer`, so that a failed expectation or a thrown error leaves nothing
     // behind in the user's Keychain.
     let store = KeychainTokenStore(service: testService)
@@ -126,7 +133,10 @@ private func scrub(_ host: String, service: String = testService) {
 
         #expect(throws: TokenStoreError.unreadable) { try store.token(for: host) }
     }
+}
 
+/// What can be checked of the Keychain store without the Keychain, on every run.
+@Suite struct TokenStoreServiceTests {
     @Test func theTokensOfTheAppAreKeptUnderTheServiceOfTheApp() {
         // Reading this does not touch the Keychain. No test may use this store: its entries are the user's.
         #expect(KeychainTokenStore().service == "dev.gooonzick.AgentDashboard.hosting")
