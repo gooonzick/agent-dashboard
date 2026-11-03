@@ -23,7 +23,7 @@ extension DashboardStore {
     func visibilityChanged() {
         pollTask?.cancel()
         pollTask = nil
-        guard isWindowVisible else { return }
+        guard isWindowVisible, didOnboard else { return }
         let sleep = env.sleep
         pollTask = Task(priority: .utility) { [weak self] in
             while !Task.isCancelled {

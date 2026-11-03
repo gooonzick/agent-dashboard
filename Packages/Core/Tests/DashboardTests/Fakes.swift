@@ -7,6 +7,7 @@ import GitKit
 import Hosting
 import ProcessKit
 import Safety
+import Shell
 import Synchronization
 import TestSupport
 import Testing
@@ -191,6 +192,7 @@ final class FakeReviews: ReviewLooking {
 
 final class FakeHosting: HostingDetecting {
     private let asked = Mutex<[String]>([])
+    private let chosen = Mutex<[String: HostingKind]>([:])
     private let kinds: [String: HostingKind]
 
     /// Every host runs GitLab, but those that `kinds` names.
@@ -199,10 +201,16 @@ final class FakeHosting: HostingDetecting {
     }
 
     var hostsAsked: [String] { asked.withLock { $0 } }
+    /// What the user has set, by host, as the model told this detector.
+    var overrides: [String: HostingKind] { chosen.withLock { $0 } }
 
     func kind(for host: String) async -> HostingKind {
         asked.withLock { $0.append(host) }
-        return kinds[host] ?? .gitlab
+        return chosen.withLock { $0[host] } ?? kinds[host] ?? .gitlab
+    }
+
+    func setOverride(_ kind: HostingKind?, for host: String) async {
+        chosen.withLock { $0[host] = kind }
     }
 }
 
@@ -428,5 +436,70 @@ final class FakeRemover: WorktreeRemoving {
             return state.prune
         }
         try await prune(repo.path)
+    }
+}
+
+// MARK: Accounts
+
+/// Tokens in memory, so that no test reads or writes the Keychain. It remembers every write.
+final class FakeTokens: TokenStoring {
+    private struct State {
+        var tokens: [String: String]
+        var writes: [String] = []
+        var readError: (any Error)?
+        var writeError: (any Error)?
+    }
+
+    private let state: Mutex<State>
+
+    init(_ tokens: [String: String] = [:]) {
+        state = Mutex(State(tokens: tokens))
+    }
+
+    /// The hosts whose token was written or removed, in order.
+    var writes: [String] { state.withLock { $0.writes } }
+    func failReads(with error: any Error) { state.withLock { $0.readError = error } }
+    func failWrites(with error: (any Error)?) { state.withLock { $0.writeError = error } }
+
+    func token(for host: String) throws -> String? {
+        try state.withLock { state in
+            if let error = state.readError { throw error }
+            return state.tokens[host.lowercased()]
+        }
+    }
+
+    func setToken(_ token: String?, for host: String) throws {
+        try state.withLock { state in
+            if let error = state.writeError { throw error }
+            state.writes.append(host.lowercased())
+            state.tokens[host.lowercased()] = (token?.isEmpty ?? true) ? nil : token
+        }
+    }
+}
+
+/// `glab` and `gh` as stand-ins: each is there or not, and prints what the test says. The real tools are never run, so
+/// no real token is read.
+final class FakeTools: CommandRunning {
+    private let installed: Set<String>
+    private let printed: [String: String]
+    private let ran = Mutex<[String]>([])
+
+    /// `printed` is by tool: what it prints as a token.
+    init(installed: Set<String> = ["glab", "gh"], printed: [String: String] = [:]) {
+        self.installed = installed
+        self.printed = printed
+    }
+
+    var commands: [String] { ran.withLock { $0 } }
+
+    func run(_ tool: String, _ args: [String], in directory: URL?, timeout: Duration) async throws -> CommandResult {
+        ran.withLock { $0.append(([tool] + args).joined(separator: " ")) }
+        guard installed.contains(tool) else { throw CommandError.notFound(tool) }
+        guard let output = printed[tool] else { return CommandResult(exitCode: 1, stdout: "", stderr: "no token") }
+        return CommandResult(exitCode: 0, stdout: output + "\n", stderr: "")
+    }
+
+    func which(_ tool: String) -> URL? {
+        installed.contains(tool) ? URL(filePath: "/opt/fake/bin/\(tool)") : nil
     }
 }

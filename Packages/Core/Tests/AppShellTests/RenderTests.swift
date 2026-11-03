@@ -52,6 +52,15 @@ import Testing
         #expect(try distinctColours(of: other) > 10)
     }
 
+    /// The first-run window.
+    @Test(arguments: [false, true]) func theOnboardingDraws(dark: Bool) throws {
+        let view = OnboardingView(start: {}).frame(width: 900, height: 560)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let image = try snapshot(view, dark: dark)
+        _ = try write(image, name: "onboarding-\(dark ? "dark" : "light").png")
+        #expect(try distinctColours(of: image) > 10)
+    }
+
     // MARK: Drawing
 
     private func render(dark: Bool, sidebar: SidebarItem = .projects, selection: String?) throws -> NSImage {

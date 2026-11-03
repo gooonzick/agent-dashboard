@@ -52,8 +52,8 @@ let package = Package(
         .testTarget(
             name: "DashboardTests",
             dependencies: [
-                "Dashboard", "CoreModels", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety",
-                "TestSupport",
+                "Dashboard", "CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit",
+                "Safety", "TestSupport",
             ],
             swiftSettings: strict),
     ]

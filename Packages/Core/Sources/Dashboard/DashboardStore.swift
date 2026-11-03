@@ -49,6 +49,10 @@ struct Repository {
     /// Whether `start()` is running, from the first line of it to the last: a second `start()` in that time does
     /// nothing, so the window waits for this to be `false` before it offers one.
     public private(set) var isStarting = false
+    /// Whether the user has been through the first-run window. Until then the store reads nothing, samples nothing and
+    /// asks no host: `start()`, `refresh()`, `fetchAll()` and `refreshReviews(host:)` do nothing, and the processes are
+    /// not sampled. `completeOnboarding()` ends it.
+    public private(set) var didOnboard: Bool
 
     /// Whether the window is on the screen. The processes are sampled every 3 seconds while it is, and not at all while
     /// it is not.
@@ -96,6 +100,7 @@ struct Repository {
 
     public init(env: DashboardEnvironment) {
         self.env = env
+        didOnboard = env.settings.didOnboard
         reader = Reader(
             git: env.git, reviews: env.reviews, hosting: env.hosting, gitLimit: Limiter(limit: 4),
             networkLimit: Limiter(limit: 4))
@@ -110,13 +115,30 @@ struct Repository {
 
     // MARK: Public operations
 
+    /// "Start scan" of the first-run window: records that it is through, so that the next launch starts at once, and
+    /// then starts. A second call while the first one runs scans no second time.
+    public func completeOnboarding() async {
+        guard !didOnboard else { return await start() }
+        didOnboard = true
+        env.settings.didOnboard = true
+        // The window may be on the screen already: the processes are sampled from now on.
+        visibilityChanged()
+        await start()
+    }
+
+    /// The hosts of the remotes of the repositories, each once, in lowercase and in order. Read from `RemoteURL`, which
+    /// holds no credentials: a remote with `user:token@` in front of its host gives the host only.
+    public var hosts: [String] {
+        Set(repositories.values.compactMap { $0.remote?.host }).sorted()
+    }
+
     /// Shows what the cache holds, then scans the disk for repositories and, while the scan runs, reads git and the
     /// hosts for the repositories that the cache knows. Once the scan is through, the repositories that it did not find
     /// go and the new ones are read. The sizes come last, in the background. Watching the disk starts at once.
     ///
     /// Cancelling it gives up the scan, and nothing is removed for a scan that did not finish.
     public func start() async {
-        guard !isStarting else { return }
+        guard didOnboard, !isStarting else { return }
         isStarting = true
         defer { isStarting = false }
         let hidden = env.settings.hiddenRepos
@@ -169,6 +191,7 @@ struct Repository {
 
     /// Reads git anew for every repository, and samples the processes. Asks no host.
     public func refresh() async {
+        guard didOnboard else { return }
         await sampleProcesses()
         await load(Array(repositories.keys))
         flushStaleSizes()
@@ -178,12 +201,24 @@ struct Repository {
     /// `git fetch --prune` in every repository, then everything anew: git, the processes, and the requests, with what
     /// the hosts said before forgotten.
     public func fetchAll() async {
+        guard didOnboard else { return }
         let paths = Array(repositories.keys)
         await boundedForEach(paths) { [reader] path in _ = await reader.fetch(path) }
         await env.reviews.invalidate()
         await refresh()
         await lookUpReviews(of: paths)
         lastUpdated = env.now()
+    }
+
+    /// Asks the hosts again for the requests of the repositories on `host`, after a token or the kind of the host was
+    /// changed: what the hosts said before is forgotten (`ReviewLooking.invalidate()` knows no single host, so the
+    /// answers of every host are), and every branch of the repositories of this host is looked up.
+    public func refreshReviews(host: String) async {
+        guard didOnboard else { return }
+        let host = host.lowercased()
+        let paths = repositories.values.filter { $0.remote?.host == host }.map(\.path)
+        await env.reviews.invalidate()
+        await lookUpReviews(of: paths)
     }
 
     /// Hides the repository at `repoPath`: it goes from the rows and from the watch, and from the cache, and the

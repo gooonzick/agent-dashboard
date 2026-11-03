@@ -15,6 +15,18 @@ public struct RootView: View {
     }
 
     public var body: some View {
+        Group {
+            if store.didOnboard {
+                main
+            } else {
+                // Until the user says so, nothing is scanned, sampled or asked of a host (see `DashboardStore`).
+                OnboardingView { Task { await store.completeOnboarding() } }
+            }
+        }
+        .background(WindowVisibility { store.isWindowVisible = $0 })
+    }
+
+    private var main: some View {
         MainView(
             projects: store.projects, ready: store.readyToRemove, scanState: store.scanState,
             lastUpdated: store.lastUpdated, isBusy: working || store.isStarting,
@@ -35,7 +47,6 @@ public struct RootView: View {
                 skipConfirmationFromNowOn: { store.settings.skipConfirmForMergedPushed = true }),
             disk: nil, readsDisk: true
         )
-        .background(WindowVisibility { store.isWindowVisible = $0 })
         .task { run { await store.start() } }
     }
 

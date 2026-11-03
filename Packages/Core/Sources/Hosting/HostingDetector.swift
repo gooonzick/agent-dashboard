@@ -12,6 +12,10 @@ public enum HostingKind: String, Sendable, Codable {
 public protocol HostingDetecting: Sendable {
     /// What `host` runs: `.unsupported` if it is neither GitHub nor GitLab, or if that cannot be told for now.
     func kind(for host: String) async -> HostingKind
+
+    /// Sets the kind of `host` for good, or with `nil` takes the override away, so that a change in the settings is
+    /// seen at once and not at the next launch. Whatever was found out about the host before is forgotten.
+    func setOverride(_ kind: HostingKind?, for host: String) async
 }
 
 /// Finds out what a host runs: GitHub, GitLab (on any address) or neither.

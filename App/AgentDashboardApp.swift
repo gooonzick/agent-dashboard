@@ -17,5 +17,11 @@ struct AgentDashboardApp: App {
             AppCommands()
             InspectorCommands()
         }
+
+        // The accounts use the detector and the review service of the store, and the Keychain entries that its
+        // requests read (`KeychainTokenStore` has the one service of the app).
+        Settings {
+            SettingsView(store: store)
+        }
     }
 }

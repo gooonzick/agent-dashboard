@@ -57,7 +57,7 @@ final class Scene {
 
     init(
         scanner: FakeScanner = FakeScanner(), git: FakeGit = FakeGit(), reviews: FakeReviews = FakeReviews(),
-        hosting: FakeHosting = FakeHosting(), signaler: FakeSignaler = FakeSignaler()
+        hosting: FakeHosting = FakeHosting(), signaler: FakeSignaler = FakeSignaler(), onboarded: Bool = true
     ) throws {
         self.scanner = scanner
         self.git = git
@@ -67,6 +67,8 @@ final class Scene {
         folder = try TempDir(named: "Dashboard")
         cache = DashboardCache(url: folder.url.appending(path: "cache.json"))
         settings = SettingsStore(defaults: try testDefaults(in: folder))
+        // The first run is the one test that says so: everything else is a store that is allowed to start.
+        settings.didOnboard = onboarded
     }
 
     /// The time that `env.now` says.
