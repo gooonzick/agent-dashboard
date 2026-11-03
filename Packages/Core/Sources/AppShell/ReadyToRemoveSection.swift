@@ -12,11 +12,13 @@ struct ReadyToRemoveSection: View {
     let rows: [WorktreeRow]
     @Binding var selection: String?
     let actions: RowActions
+    /// `false` on the Ready to remove page, which lists every row.
+    var capped = true
 
     /// Whether every row is shown rather than the first few (Ruling 66).
     @State private var expanded = false
 
-    private var listing: ReadyListing { ReadyListing(rows, expanded: expanded) }
+    private var listing: ReadyListing { ReadyListing(rows, expanded: expanded, capped: capped) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

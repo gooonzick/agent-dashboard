@@ -160,21 +160,24 @@ public struct ReadyListing: Equatable, Sendable {
     /// Every row that is ready: what the header counts and what `Remove N…` acts on.
     public let all: [WorktreeRow]
     public let expanded: Bool
+    /// `false` on the Ready to remove page, which lists every row; only the block on Projects is capped.
+    public let capped: Bool
 
-    public init(_ all: [WorktreeRow], expanded: Bool) {
+    public init(_ all: [WorktreeRow], expanded: Bool, capped: Bool = true) {
         self.all = all
         self.expanded = expanded
+        self.capped = capped
     }
 
     public var total: Int { all.count }
 
     /// The rows that have a line of their own.
-    public var shown: [WorktreeRow] { expanded ? all : Array(all.prefix(Self.collapsedLimit)) }
+    public var shown: [WorktreeRow] { expanded || !capped ? all : Array(all.prefix(Self.collapsedLimit)) }
 
     /// The words of the last row: `Show all N` while some rows are hidden, `Show less` once all are shown; `nil` when
     /// there are no more rows than fit.
     public var toggleTitle: String? {
-        guard total > Self.collapsedLimit else { return nil }
+        guard capped, total > Self.collapsedLimit else { return nil }
         return expanded ? "Show less" : "Show all \(total)"
     }
 

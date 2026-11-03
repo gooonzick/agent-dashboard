@@ -170,6 +170,18 @@ import Testing
         #expect(ReadyListing(rows(4), expanded: true).shown.count == 4)
     }
 
+    /// The Ready to remove page lists every row: no cap, no `Show all` row (only the block on Projects is capped).
+    @Test func theUncappedPageShowsEveryRowAndNoToggle() {
+        let all = rows(12)
+        for expanded in [false, true] {
+            let page = ReadyListing(all, expanded: expanded, capped: false)
+            #expect(page.shown.map(\.id) == all.map(\.id))
+            #expect(page.toggleTitle == nil)
+            #expect(page.removeTitle == "Remove 12…")
+        }
+        #expect(ReadyListing(all, expanded: false).shown.count == 4)
+    }
+
     @Test func theBlocksCountsStillCountEveryRow() {
         let all = rows(12)
         let listing = ReadyListing(all, expanded: false)
