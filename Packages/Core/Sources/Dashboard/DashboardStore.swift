@@ -95,6 +95,8 @@ struct Repository {
     @ObservationIgnored var eventWorker: Task<Void, Never>?
     @ObservationIgnored var ticket = 0
     @ObservationIgnored var cacheLoaded = false
+    /// Whether `start()` has begun once in this run of the app (`startIfNeeded`).
+    @ObservationIgnored var hasStarted = false
     /// What the watcher added and removed while a scan was under way: the scan's answer may be older.
     @ObservationIgnored var changesDuringScan: RepositoryChanges?
     @ObservationIgnored var removalLocks: [String: Limiter] = [:]
@@ -136,6 +138,14 @@ struct Repository {
         Set(repositories.values.compactMap { $0.remote?.host }).sorted()
     }
 
+    /// `start()`, the first time it is asked for in this run of the app, and nothing after that: the window asks each
+    /// time it appears, and a scan of the whole disk is not what showing the window again is for. Refresh calls
+    /// `start()` itself.
+    public func startIfNeeded() async {
+        guard !hasStarted else { return }
+        await start()
+    }
+
     /// Shows what the cache holds, then scans the disk for repositories and, while the scan runs, reads git and the
     /// hosts for the repositories that the cache knows. Once the scan is through, the repositories that it did not find
     /// go and the new ones are read. The sizes come last, in the background. Watching the disk starts at once.
@@ -143,6 +153,7 @@ struct Repository {
     /// Cancelling it gives up the scan, and nothing is removed for a scan that did not finish.
     public func start() async {
         guard didOnboard, !isStarting else { return }
+        hasStarted = true
         isStarting = true
         defer { isStarting = false }
         let hidden = env.settings.hiddenRepos

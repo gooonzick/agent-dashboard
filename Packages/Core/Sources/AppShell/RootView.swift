@@ -48,7 +48,9 @@ public struct RootView: View {
                 skipConfirmationFromNowOn: { store.settings.skipConfirmForMergedPushed = true }),
             disk: nil, readsDisk: true
         )
-        .task { run { await store.start() } }
+        // Once in a run of the app: the window appears again after it was closed, and that is no reason to scan the
+        // disk again.
+        .task { run { await store.startIfNeeded() } }
     }
 
     private func run(_ work: @escaping @MainActor () async -> Void) {

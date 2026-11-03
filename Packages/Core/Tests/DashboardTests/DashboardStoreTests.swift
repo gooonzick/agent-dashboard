@@ -68,6 +68,22 @@ import Testing
         #expect(store.row("/x/wt")?.status == cleanAndPushed)
     }
 
+    @Test func theWindowStartsTheStoreOnceInARun() async throws {
+        let scene = try Scene()
+        scene.addRepository("/x/repo")
+        let store = scene.makeStore()
+
+        await store.startIfNeeded()
+        await store.startIfNeeded()  // the window appears again
+        #expect(scene.scanner.scans == 1)
+
+        await store.start()  // Refresh
+        #expect(scene.scanner.scans == 2)
+        await store.startIfNeeded()
+        #expect(scene.scanner.scans == 2)
+        await scene.settle(store)
+    }
+
     @Test func readyContainsOnlyMergedClean() async throws {
         let scene = try Scene()
         let mergedClean = linked("/x/wt-a", branch: "a")
