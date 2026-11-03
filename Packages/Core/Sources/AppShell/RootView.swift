@@ -31,6 +31,7 @@ public struct RootView: View {
             projects: store.projects, ready: store.readyToRemove, scanState: store.scanState,
             lastUpdated: store.lastUpdated, isBusy: working || store.isStarting,
             fetch: { run { await store.fetchAll() } },
+            refreshSizes: { store.refreshSizes(of: $0) },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
             // nothing while another `start()` runs, which is why the button is off then.
             refresh: { run { await store.start() } },
@@ -93,6 +94,9 @@ struct MainView: View {
     let lastUpdated: Date?
     let isBusy: Bool
     let fetch: () -> Void
+    /// Measures the worktrees at these paths again if their sizes are more than a minute old: the one that the
+    /// inspector shows, and those of the sheet (`DashboardStore.refreshSizes(of:)`).
+    let refreshSizes: ([String]) -> Void
     let refresh: () -> Void
     let removal: RemovalActions
 
@@ -115,7 +119,8 @@ struct MainView: View {
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
-        fetch: @escaping () -> Void, refresh: @escaping () -> Void, removal: RemovalActions,
+        fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
+        refresh: @escaping () -> Void, removal: RemovalActions,
         sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
         readsDisk: Bool
     ) {
@@ -125,6 +130,7 @@ struct MainView: View {
         self.lastUpdated = lastUpdated
         self.isBusy = isBusy
         self.fetch = fetch
+        self.refreshSizes = refreshSizes
         self.refresh = refresh
         self.removal = removal
         _sidebar = State(initialValue: sidebar)
@@ -147,7 +153,13 @@ struct MainView: View {
                 .toolbar { toolbar }
                 .inspector(isPresented: $showsInspector) {
                     Group {
-                        if let row = selectedRow { WorktreeInspector(row: row, actions: rowActions) } else { Color.clear }
+                        if let row = selectedRow {
+                            WorktreeInspector(row: row, actions: rowActions)
+                                // When the inspector shows a worktree: on appearing, and for each other one selected.
+                                .task(id: row.id) { refreshSizes([row.id]) }
+                        } else {
+                            Color.clear
+                        }
                     }
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
@@ -155,13 +167,14 @@ struct MainView: View {
         .focusedSceneValue(\.windowCommands, commands)
         .sheet(item: $ask) { ask in
             RemoveSheet(
-                model: RemoveSheetModel(rows: ask.rows), cancel: { self.ask = nil },
+                model: RemoveSheetModel(rows: ask.rows, sizes: currentSizes(of: ask.rows)), cancel: { self.ask = nil },
                 confirm: { deleteBranches, dontAskAgain in
                     self.ask = nil
                     // Only once the user confirms: Cancel leaves the setting as it was.
                     if dontAskAgain { removal.skipConfirmationFromNowOn() }
                     perform(ask.rows, deleteBranches: deleteBranches)
                 })
+                .task { refreshSizes(ask.rows.map(\.id)) }
         }
         .alert(
             "Some worktrees were not removed",
@@ -212,12 +225,21 @@ struct MainView: View {
     }
 
     private var selectedRow: WorktreeRow? {
-        guard let selection else { return nil }
+        selection.flatMap(currentRow)
+    }
+
+    /// The row of the worktree at `path` as the store shows it now.
+    private func currentRow(_ path: String) -> WorktreeRow? {
         for project in projects {
-            if project.main.id == selection { return project.main }
-            if let row = project.worktrees.first(where: { $0.id == selection }) { return row }
+            if project.main.id == path { return project.main }
+            if let row = project.worktrees.first(where: { $0.id == path }) { return row }
         }
         return nil
+    }
+
+    /// The sizes that the store has now for `rows`, which the sheet shows in place of theirs.
+    private func currentSizes(of rows: [WorktreeRow]) -> [String: SizeInfo] {
+        rows.reduce(into: [:]) { sizes, row in sizes[row.id] = currentRow(row.id)?.size }
     }
 
     // MARK: Removal
