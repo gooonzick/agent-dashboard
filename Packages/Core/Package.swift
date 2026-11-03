@@ -22,6 +22,10 @@ let package = Package(
         .target(name: "DiskUsage", dependencies: ["CoreModels"], swiftSettings: strict),
         .target(name: "ProcessKit", dependencies: ["CoreModels"], swiftSettings: strict),
         .target(name: "Safety", dependencies: ["CoreModels"], swiftSettings: strict),
+        .target(
+            name: "Dashboard",
+            dependencies: ["CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety"],
+            swiftSettings: strict),
         .target(name: "AppShell", dependencies: ["CoreModels"], swiftSettings: strict),
         // Helpers shared by the test targets: temporary folders, and real git repositories to run tests against.
         .target(name: "TestSupport", dependencies: ["Shell"], path: "Tests/TestSupport", swiftSettings: strict),
@@ -42,5 +46,12 @@ let package = Package(
             name: "ProcessKitTests", dependencies: ["ProcessKit", "CoreModels", "TestSupport"],
             swiftSettings: strict),
         .testTarget(name: "SafetyTests", dependencies: ["Safety", "CoreModels"], swiftSettings: strict),
+        .testTarget(
+            name: "DashboardTests",
+            dependencies: [
+                "Dashboard", "CoreModels", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety",
+                "TestSupport",
+            ],
+            swiftSettings: strict),
     ]
 )

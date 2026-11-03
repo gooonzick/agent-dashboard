@@ -1,0 +1,78 @@
+import CoreModels
+import Discovery
+import DiskUsage
+import Foundation
+import GitKit
+import Hosting
+import ProcessKit
+import Shell
+
+/// Everything that the store reads, runs and writes through: the disk, git, the hosting services, the processes and
+/// the clock. Tests put fakes in it.
+public struct DashboardEnvironment: Sendable {
+    public var scanner: any RepoScanning
+    public var git: any GitReading
+    public var reviews: any ReviewLooking
+    /// What each host runs. It is the detector that `reviews` asks too, so that a host is probed once.
+    public var hosting: any HostingDetecting
+    public var sizes: any SizeMeasuring
+    public var sampler: any ProcessSampling
+    public var signaler: any ProcessSignaling
+    public var remover: any WorktreeRemoving
+    public var watcher: any FileWatching
+    public var cache: DashboardCache
+    public var settings: SettingsStore
+    public var now: @Sendable () -> Date
+    /// How the store waits between two samples of the processes.
+    public var sleep: @Sendable (Duration) async throws -> Void
+
+    public init(
+        scanner: any RepoScanning, git: any GitReading, reviews: any ReviewLooking, hosting: any HostingDetecting,
+        sizes: any SizeMeasuring, sampler: any ProcessSampling, signaler: any ProcessSignaling,
+        remover: any WorktreeRemoving, watcher: any FileWatching, cache: DashboardCache, settings: SettingsStore,
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        self.scanner = scanner
+        self.git = git
+        self.reviews = reviews
+        self.hosting = hosting
+        self.sizes = sizes
+        self.sampler = sampler
+        self.signaler = signaler
+        self.remover = remover
+        self.watcher = watcher
+        self.cache = cache
+        self.settings = settings
+        self.now = now
+        self.sleep = sleep
+    }
+
+    /// The environment of the app: the real disk, `git`, Keychain tokens, GitHub and GitLab, and the user's processes.
+    ///
+    /// The hosting services are asked through a session of their own, ephemeral and stripped of credential storage,
+    /// cookies and cache, so that no request carries anything but what the clients put in it.
+    public static func live(settings: SettingsStore, tokens: any TokenStoring = KeychainTokenStore()) -> Self {
+        let runner = CommandRunner()
+        let session = bareSession()
+        let detector = HostingDetector(overrides: settings.hostingOverrides, session: session)
+        let sampler = ProcessSampler()
+        let signaler = ProcessSignaler()
+        return DashboardEnvironment(
+            scanner: RepoScanner(), git: GitReader(runner: runner),
+            reviews: ReviewService(detector: detector, tokens: tokens, session: session), hosting: detector,
+            sizes: PrivateSizeScanner(), sampler: sampler, signaler: signaler,
+            remover: WorktreeRemover(runner: runner, signaler: signaler, sampler: sampler), watcher: FileWatcher(),
+            cache: .standard, settings: settings)
+    }
+
+    /// An ephemeral session with nothing of its own to add to a request.
+    static func bareSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCredentialStorage = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }
+}

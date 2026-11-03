@@ -8,6 +8,12 @@ public enum HostingKind: String, Sendable, Codable {
     case unsupported
 }
 
+/// Tells what a host runs.
+public protocol HostingDetecting: Sendable {
+    /// What `host` runs: `.unsupported` if it is neither GitHub nor GitLab, or if that cannot be told for now.
+    func kind(for host: String) async -> HostingKind
+}
+
 /// Finds out what a host runs: GitHub, GitLab (on any address) or neither.
 ///
 /// `github.com` and `gitlab.com` are known. For any other host the user's override counts first, and without one the
@@ -19,7 +25,7 @@ public enum HostingKind: String, Sendable, Codable {
 /// so a probe is careful. It is a plain HTTPS GET that carries no token and sends no cookie; it is not sent on to
 /// another address, however the host redirects; it takes the status and leaves the body, and it is given up after
 /// `probeTimeout`.
-public actor HostingDetector {
+public actor HostingDetector: HostingDetecting {
     private static let wellKnown: [String: HostingKind] = ["github.com": .github, "gitlab.com": .gitlab]
 
     private let session: URLSession

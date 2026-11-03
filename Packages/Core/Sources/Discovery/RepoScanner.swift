@@ -25,6 +25,10 @@ public protocol RepoScanning: Sendable {
     /// The walk is file system work that blocks its thread for as long as it takes: run it from a background task, at
     /// `.utility` priority or lower.
     func scan(roots: [URL], rules: ExclusionRules, isCancelled: @Sendable () -> Bool) async -> [URL]
+
+    /// The folders that a scan of the whole Mac starts from: the startup disk and, if `rules` ask for it, the other
+    /// disks that are mounted.
+    func defaultRoots(rules: ExclusionRules) -> [URL]
 }
 
 public struct RepoScanner: RepoScanning {
@@ -64,7 +68,7 @@ public struct RepoScanner: RepoScanning {
         // not absolute would be taken relative to the working directory by `realpath`.
         // Looking each folder up in this set is enough, because the walk reaches a folder through its parents. It is
         // also why an excluded folder above a root does not matter.
-        let excluded = Set(rules.excludedPaths.filter { $0.hasPrefix("/") }.map(canonicalPath))
+        let excluded = Self.excludedFolders(rules)
         var repositories: Set<String> = []
         for root in roots {
             let finished = Self.walk(
@@ -146,5 +150,63 @@ public struct RepoScanner: RepoScanning {
         case S_IFREG: return .file
         default: return .nothing
         }
+    }
+}
+
+// MARK: - Judging one folder
+
+extension RepoScanner {
+    /// Whether a scan of `roots` with `rules` reports `folder` as a repository, judged by the folder and the folders
+    /// between a root and it, without walking anything else. It is what the file watcher asks when a `.git` folder
+    /// appears: the answer is the one that a full scan would give, by the same rules (see `scan`).
+    ///
+    /// The folder needs a `.git` folder, and it has to lie in a root, or be one. On the way down from that root, no
+    /// folder may be excluded by `rules`, be a package or a symlink, or be a tool folder: one of
+    /// `ExclusionRules.serviceDirectoryNames`, where `tmp` and `build` count only below a folder that holds a `.git`
+    /// folder or file. An excluded folder above the root does not matter, as for `scan`.
+    public static func wouldFind(_ folder: String, roots: [URL], rules: ExclusionRules) -> Bool {
+        let path = canonicalPath(folder)
+        return dotGit(in: path) == .folder && walks(into: path, roots: roots, rules: rules)
+    }
+
+    /// Whether a scan of `roots` with `rules` walks into `folder` and looks at what is in it: the conditions of
+    /// `wouldFind` without the `.git` folder.
+    public static func walks(into folder: String, roots: [URL], rules: ExclusionRules) -> Bool {
+        let path = canonicalPath(folder)
+        let excluded = excludedFolders(rules)
+        return roots.contains { reaches(path, from: canonicalPath($0.path), excluding: excluded) }
+    }
+
+    /// The excluded folders as the walk sees paths: canonical, and absolute (`realpath` would take a relative entry
+    /// relative to the working directory).
+    private static func excludedFolders(_ rules: ExclusionRules) -> Set<String> {
+        Set(rules.excludedPaths.filter { $0.hasPrefix("/") }.map(canonicalPath))
+    }
+
+    /// Whether the walk from `root` gets to `path`, step by step, as `walk` takes them.
+    private static func reaches(_ path: String, from root: String, excluding excluded: Set<String>) -> Bool {
+        let rootNames = root.split(separator: "/")
+        let names = path.split(separator: "/")
+        guard path.hasPrefix("/"), names.starts(with: rootNames), !excluded.contains(root) else { return false }
+        var current = root
+        // Whether the walk is in a project, as `projectLevel` says in `walk`: a folder on the way holds a `.git`.
+        var inProject = dotGit(in: root) != .nothing
+        for name in names.dropFirst(rootNames.count) {
+            current = current == "/" ? "/\(name)" : "\(current)/\(name)"
+            let name = String(name)
+            let isServiceDirectory =
+                ExclusionRules.serviceDirectoryNames.contains(name)
+                && (inProject || !skippedOnlyInsideProjects.contains(name))
+            guard !excluded.contains(current), !isServiceDirectory, isWalkedFolder(current) else { return false }
+            if dotGit(in: current) != .nothing { inProject = true }
+        }
+        return true
+    }
+
+    /// A folder that the walk enters: a directory that is neither a symlink nor a package.
+    private static func isWalkedFolder(_ path: String) -> Bool {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]
+        guard let values = try? URL(filePath: path).resourceValues(forKeys: keys) else { return false }
+        return values.isDirectory == true && values.isSymbolicLink != true && values.isPackage != true
     }
 }
