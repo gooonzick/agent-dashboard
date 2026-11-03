@@ -3,6 +3,7 @@
 xcuserdata/
 DerivedData/
 .build/
+.swiftpm/
 
 # macOS
 .DS_Store
