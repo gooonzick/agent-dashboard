@@ -11,10 +11,19 @@ enum WatchStream: Sendable {
 }
 
 extension DashboardStore {
-    /// How long a measured size stands before a change makes it worth measuring again. A worktree in which a build
-    /// runs changes all the time, and walking its `node_modules` again every two seconds would be most of what the app
-    /// does.
-    static let sizeInterval: TimeInterval = 30
+    /// How long a size, from the cache or from a measure, stands when the app starts (Ruling 70). Walking every
+    /// worktree's `node_modules` on each launch keeps a core busy for minutes, and the sizes of folders that nobody
+    /// looks at change little in a day.
+    static let sizeIntervalOnStart: TimeInterval = 6 * 60 * 60
+    /// How long a measured size stands before a change in the folder makes it worth measuring again. A worktree in
+    /// which a build runs changes all the time, and walking its `node_modules` again every few seconds would be most of
+    /// what the app does (Ruling 70).
+    static let sizeIntervalOnChange: TimeInterval = 10 * 60
+    /// How old a size may be when the user looks at it: in the inspector, or in the sheet that removes the worktree.
+    static let sizeIntervalOnDemand: TimeInterval = 60
+    /// The sizes reach the cache at most this often while they are measured, and once more when the last is done, so
+    /// that quitting in the middle of a pass loses at most this much of it.
+    static let sizeSaveInterval: TimeInterval = 30
     static let watchLatency: Duration = .seconds(2)
     static let pollInterval: Duration = .seconds(3)
 
@@ -41,32 +50,54 @@ extension DashboardStore {
 
     // MARK: Sizes
 
-    /// Measures the folders at `paths` that have not been measured lately. The others keep their size.
+    /// Measures the folders at `paths` that have no size, or one older than `sizeIntervalOnStart`. The others keep
+    /// their size.
     func measureIfDue(_ paths: [String]) {
-        for path in paths where isDue(path) { enqueueSize(path) }
+        for path in paths where isDue(path, after: Self.sizeIntervalOnStart) { enqueueSize(path) }
     }
 
-    /// Notes that what is in the folders at `paths` changed: each is measured again now if it has not been lately, or
-    /// else once it is due (`flushStaleSizes`).
+    /// Measures the folders at `paths` before any other, if their size is older than a minute
+    /// (`sizeIntervalOnDemand`): the window calls it for the worktree that the inspector shows and for the rows of the
+    /// sheet that removes worktrees, whose sizes the user reads then. One that is being measured is not asked for
+    /// twice.
+    public func refreshSizes(of paths: [String]) {
+        let due = paths.filter {
+            $0 != sizeInFlight && isMeasurable($0) && isDue($0, after: Self.sizeIntervalOnDemand)
+        }
+        guard !due.isEmpty else { return }
+        staleSizes.subtract(due)
+        sizeQueue.removeAll { due.contains($0) }
+        sizeQueue.insert(contentsOf: due, at: 0)
+        enqueueSize(nil)
+    }
+
+    /// Notes that what is in the folders at `paths` changed: each is measured again now if its size is older than
+    /// `sizeIntervalOnChange`, or else once it is (`flushStaleSizes`).
     func markStale(_ paths: some Sequence<String>) {
         for path in paths {
-            if isDue(path) { enqueueSize(path) } else { staleSizes.insert(path) }
+            if isDue(path, after: Self.sizeIntervalOnChange) { enqueueSize(path) } else { staleSizes.insert(path) }
         }
     }
 
     func flushStaleSizes() {
-        let due = staleSizes.filter(isDue)
+        let due = staleSizes.filter { isDue($0, after: Self.sizeIntervalOnChange) }
         staleSizes.subtract(due)
         for path in due.sorted() { enqueueSize(path) }
     }
 
-    private func isDue(_ path: String) -> Bool {
-        measuredAt[path].map { env.now().timeIntervalSince($0) >= Self.sizeInterval } ?? true
+    private func isDue(_ path: String, after interval: TimeInterval) -> Bool {
+        measuredAt[path].map { env.now().timeIntervalSince($0) >= interval } ?? true
     }
 
-    private func enqueueSize(_ path: String) {
-        if !sizeQueue.contains(path) { sizeQueue.append(path) }
-        guard sizeWorker == nil else { return }
+    /// Whether `path` is the folder of a worktree that has one.
+    private func isMeasurable(_ path: String) -> Bool {
+        repositories.values.contains { $0.presentWorktrees.contains { $0.path == path } }
+    }
+
+    /// Puts `path` at the end of the queue, if it is not in it, and starts the worker if it is not running.
+    private func enqueueSize(_ path: String?) {
+        if let path, !sizeQueue.contains(path) { sizeQueue.append(path) }
+        guard sizeWorker == nil, !sizeQueue.isEmpty else { return }
         let measurer = env.sizes
         // One folder at a time, at background priority. Nothing waits for this task, so nothing raises its priority.
         sizeWorker = Task(priority: .background) { [weak self] in
@@ -85,18 +116,30 @@ extension DashboardStore {
             else { continue }  // gone since it was asked for
             // A worktree inside this one is measured on its own, and is not freed by removing this one: git refuses.
             let nested = repo.presentWorktrees.map(\.path).filter { $0 != path && isInside($0, path) }
+            sizeInFlight = path
             return SizeJob(path: path, excluding: Set(nested))
         }
         sizeWorker = nil
-        saveCache()
+        sizeInFlight = nil
+        saveSizes()
         return nil
     }
 
     private func finishSize(of path: String, _ size: SizeInfo?) {
-        guard repositories.values.contains(where: { $0.presentWorktrees.contains { $0.path == path } }) else { return }
+        sizeInFlight = nil
+        guard isMeasurable(path) else { return }
+        let now = env.now()
+        // The cache keeps the size with its `computedAt`, which the next start takes for the time it was measured.
         sizes[path] = size
-        measuredAt[path] = env.now()
+        measuredAt[path] = now
         publish()
+        if lastSizeSave.map({ now.timeIntervalSince($0) >= Self.sizeSaveInterval }) ?? true { saveSizes() }
+    }
+
+    /// Writes the cache for the sizes, and notes when.
+    private func saveSizes() {
+        lastSizeSave = env.now()
+        saveCache()
     }
 
     // MARK: Watching

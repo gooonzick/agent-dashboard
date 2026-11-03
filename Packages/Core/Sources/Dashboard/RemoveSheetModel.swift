@@ -38,10 +38,15 @@ public struct RemoveSheetModel: Equatable {
     /// `Remove 3 worktrees`, or `Stop and remove 3 worktrees` when a process is stopped first.
     public let removeButtonTitle: String
 
-    public init(rows: [WorktreeRow]) {
+    /// `sizes` are newer sizes of the rows, by their path, which stand in for those that the rows hold: the rows are
+    /// what the user asked to remove, as they were then, and their sizes are measured again while the sheet is open.
+    public init(rows: [WorktreeRow], sizes: [String: SizeInfo] = [:]) {
         let count = rows.count == 1 ? "1 worktree" : "\(rows.count) worktrees"
         title = "Remove \(count)?"
-        items = rows.map { Item(id: $0.id, name: $0.displayName, size: $0.size.map { SizeFormat.disk($0.privateBytes) } ?? "—") }
+        let size = { (row: WorktreeRow) in sizes[row.id] ?? row.size }
+        items = rows.map {
+            Item(id: $0.id, name: $0.displayName, size: size($0).map { SizeFormat.disk($0.privateBytes) } ?? "—")
+        }
 
         let manual = rows.filter { if case .manual = $0.eligibility { true } else { false } }
         if manual.isEmpty {
@@ -62,7 +67,7 @@ public struct RemoveSheetModel: Equatable {
             .filter { seen.insert($0.pid).inserted }
             .map { "\($0.name) · pid \($0.pid)" }
 
-        let measured = rows.compactMap(\.size)
+        let measured = rows.compactMap(size)
         totalFrees = measured.isEmpty ? "" : "Frees " + SizeFormat.disk(measured.reduce(0) { $0 + $1.privateBytes })
         removeButtonTitle = (processesToStop.isEmpty ? "Remove " : "Stop and remove ") + count
     }

@@ -80,7 +80,11 @@ struct Repository {
     @ObservationIgnored var measuredAt: [String: Date] = [:]
     @ObservationIgnored var staleSizes: Set<String> = []
     @ObservationIgnored var sizeQueue: [String] = []
+    /// The folder that the worker measures now.
+    @ObservationIgnored var sizeInFlight: String?
     @ObservationIgnored var sizeWorker: Task<Void, Never>?
+    /// When a finished size last made the cache be written (`sizeSaveInterval`).
+    @ObservationIgnored var lastSizeSave: Date?
     @ObservationIgnored var pollTask: Task<Void, Never>?
     @ObservationIgnored var roots: [URL] = []
     @ObservationIgnored var rootsWatch: (paths: [String], token: AnyObject)?

@@ -106,7 +106,7 @@ import Testing
         let store = await scene.startedStore()
         let listings = scene.git.count { $0 == .worktrees("/x/repo") }
         scene.git.update("/x/repo") { $0.statuses[worktree.path] = WorktreeStatus(upstream: "origin/x", modified: 4) }
-        scene.passTime(60)
+        scene.passTime(10 * 60)
 
         scene.watcher.send([worktree.path + "/src"], toWatchOf: worktree.path)
         await scene.settle(store)
@@ -117,19 +117,19 @@ import Testing
         #expect(scene.sizes.measured.filter { $0.path == worktree.path }.count == 2)
     }
 
-    @Test func aWorktreeIsMeasuredAtMostTwiceAMinute() async throws {
+    @Test func aWorktreeThatChangesIsMeasuredAtMostEveryTenMinutes() async throws {
         let scene = try Scene(scanner: FakeScanner(roots: [URL(filePath: "/x")]))
         let worktree = linked("/x/wt", branch: "b")
         scene.addRepository("/x/repo", worktrees: [worktree])
         let store = await scene.startedStore()
 
-        scene.passTime(5)
+        scene.passTime(9 * 60)
         scene.watcher.send([worktree.path + "/build"], toWatchOf: worktree.path)
         await scene.settle(store)
         #expect(scene.sizes.measured.filter { $0.path == worktree.path }.count == 1)
 
         // What changed is measured once the time is up, at the next sample of the processes.
-        scene.passTime(30)
+        scene.passTime(60)
         store.isWindowVisible = true
         #expect(await poll { scene.sizes.measured.filter { $0.path == worktree.path }.count == 2 })
         store.isWindowVisible = false

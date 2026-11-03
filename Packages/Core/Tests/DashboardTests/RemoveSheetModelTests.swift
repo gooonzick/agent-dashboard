@@ -13,6 +13,17 @@ import Testing
         #expect(m.title == "Remove 3 worktrees?" && m.removeButtonTitle == "Remove 3 worktrees" && m.totalFrees == "Frees 0.8 GB")
     }
 
+    @Test func aSizeMeasuredWhileTheSheetIsOpenStandsInForTheOldOne() {
+        let old = SizeInfo(apparentBytes: 0, privateBytes: 200_000_000, computedAt: .distantPast)
+        let new = SizeInfo(apparentBytes: 0, privateBytes: 500_000_000, computedAt: .distantPast)
+        let rows = [row(.ready(needsStopping: false), name: "a", size: old), row(.ready(needsStopping: false), name: "b")]
+
+        let m = RemoveSheetModel(rows: rows, sizes: [rows[1].id: new])
+
+        #expect(m.items.map(\.size) == ["0.2 GB", "0.5 GB"])
+        #expect(m.totalFrees == "Frees 0.7 GB")
+    }
+
     @Test func singular() { #expect(RemoveSheetModel(rows: [ready(private: 0)]).title == "Remove 1 worktree?") }
 
     @Test func needsStoppingWhenAnyRowRuns() {

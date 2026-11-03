@@ -291,17 +291,28 @@ final class FakeSizes: SizeMeasuring {
     }
 
     private let state = Mutex(State())
+    /// The folders whose measure does not finish until the test lets it (`hold`, `release`).
+    private let held = Mutex<[String: DispatchSemaphore]>([:])
 
     /// Every folder takes 1 GB and frees 0.1 GB, but those that are given a size here.
     func set(_ path: String, _ size: SizeInfo) { state.withLock { $0.sizes[path] = size } }
     var measured: [Measurement] { state.withLock { $0.measured } }
+    /// The paths of `measured`, in order.
+    var measuredPaths: [String] { measured.map(\.path) }
+
+    /// Makes the measure of `path` wait, once it has begun, until `release(path)`. The worker of the store measures
+    /// one folder at a time, so the others wait behind it.
+    func hold(_ path: String) { held.withLock { $0[path] = DispatchSemaphore(value: 0) } }
+    func release(_ path: String) { held.withLock { $0.removeValue(forKey: path) }?.signal() }
 
     func measure(_ root: URL, excluding: Set<String>, isCancelled: @Sendable () -> Bool) throws -> SizeInfo {
-        state.withLock { state in
+        let size = state.withLock { state in
             state.measured.append(Measurement(path: root.path, excluding: excluding))
             return state.sizes[root.path]
                 ?? SizeInfo(apparentBytes: 1_000_000_000, privateBytes: 100_000_000, computedAt: .distantPast)
         }
+        held.withLock { $0[root.path] }?.wait()
+        return size
     }
 }
 
