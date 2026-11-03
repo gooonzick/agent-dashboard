@@ -33,6 +33,22 @@ import Testing
             ])
     }
 
+    @Test func countsAreSingularAtOne() {
+        #expect(
+            RowPresenter.stateChips(row(.blocked([.modified(1), .untracked(1), .stash(1), .unpushed(1)]))).map(\.text)
+                == ["1 change", "1 untracked", "stash", "1 unpushed"])
+        #expect(
+            RowPresenter.stateChips(row(.blocked([.modified(2), .stash(2)]))).map(\.text) == ["2 changes", "2 stashes"])
+        #expect(RowPresenter.stateChips(row(.mainWorktree, status: WorktreeStatus(modified: 1))).map(\.text) == ["1 change"])
+    }
+
+    @Test func theChangesLineSaysWhatTheChipsSay() {
+        #expect(RowPresenter.changesLine(row(.ready(needsStopping: false))) == "Clean")
+        #expect(RowPresenter.changesLine(row(.blocked([.stash(1)]))) == "stash")
+        #expect(RowPresenter.changesLine(row(.blocked([.modified(1), .untracked(4)]))) == "1 change, 4 untracked")
+        #expect(RowPresenter.changesLine(row(.missing)) == "Missing")
+    }
+
     @Test func aMainWorktreeShowsWhatGitSays() {
         let dirty = WorktreeStatus(modified: 2, untracked: 1)
         #expect(

@@ -21,7 +21,7 @@ public struct RootView: View {
             fetch: { run { await store.fetchAll() } },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
             // nothing while another `start()` runs, which is why the button is off then.
-            refresh: { run { await store.start() } }
+            refresh: { run { await store.start() } }, disk: nil, readsDisk: true
         )
         .background(WindowVisibility { store.isWindowVisible = $0 })
         .task { run { await store.start() } }
@@ -54,12 +54,14 @@ struct MainView: View {
     @State private var collapsed: Set<String> = []
     @State private var showsInspector: Bool
     @State private var disk: StartupDisk?
+    /// Whether the disk is read, now and every 30 seconds. Renders turn it off and pass a disk of their own.
+    private let readsDisk: Bool
     @State private var now = Date()
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
         fetch: @escaping () -> Void, refresh: @escaping () -> Void, sidebar: SidebarItem = .projects,
-        selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk? = StartupDisk.read()
+        selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?, readsDisk: Bool
     ) {
         self.projects = projects
         self.ready = ready
@@ -72,6 +74,7 @@ struct MainView: View {
         _selection = State(initialValue: selection)
         _showsInspector = State(initialValue: showsInspector)
         _disk = State(initialValue: disk)
+        self.readsDisk = readsDisk
     }
 
     var body: some View {
@@ -98,9 +101,12 @@ struct MainView: View {
         }
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
                 now = Date()
-                disk = StartupDisk.read()
+                if readsDisk {
+                    // Off the main actor: asking a volume for its capacity can wait on the disk.
+                    disk = await Task.detached(priority: .utility) { StartupDisk.read() }.value
+                }
+                try? await Task.sleep(for: .seconds(30))
             }
         }
     }

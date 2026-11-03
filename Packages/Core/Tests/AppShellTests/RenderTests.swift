@@ -9,9 +9,14 @@ import Testing
 
 @testable import AppShell
 
+/// These tests open a borderless window far off every screen, which needs a logged-in session and takes some seconds,
+/// so they are off unless the environment has `AD_RENDER_TESTS=1`:
+///
+///     AD_RENDER_TESTS=1 RENDER_DIR=/some/folder swift test --package-path Packages/Core --filter AppShellTests
+///
 /// Draws the window off screen with fixture rows, in light and in dark, and writes the pictures to the folder in
 /// `RENDER_DIR` (a temporary folder when it is not set). Nothing is put on the screen and nothing is recorded.
-@MainActor @Suite struct RenderTests {
+@MainActor @Suite(.enabled(if: ProcessInfo.processInfo.environment["AD_RENDER_TESTS"] == "1")) struct RenderTests {
     @Test(arguments: [false, true]) func theWindowDraws(dark: Bool) throws {
         let image = try render(dark: dark, selection: Fixtures.selected)
         #expect(image.size.width > 100)
@@ -39,7 +44,7 @@ import Testing
         let main = MainView(
             projects: Fixtures.projects, ready: Fixtures.ready, scanState: .idle,
             lastUpdated: Date().addingTimeInterval(-120), isBusy: false, fetch: {}, refresh: {}, sidebar: sidebar,
-            selection: selection, disk: Fixtures.disk)
+            selection: selection, disk: Fixtures.disk, readsDisk: false)
         return try snapshot(main, size: size, dark: dark)
     }
 

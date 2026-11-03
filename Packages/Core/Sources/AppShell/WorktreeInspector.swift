@@ -17,7 +17,9 @@ struct WorktreeInspector: View {
                 if !row.groups.isEmpty { runningSection }
                 if let size = row.size { diskSection(size) }
                 if !row.worktree.isMain {
-                    Button("Remove worktree…") {}  // Wired with the removal sheet.
+                    // Task 14 wires this to the removal sheet; until then it does nothing and is off.
+                    Button("Remove worktree…") {}
+                        .disabled(true)
                         .controlSize(.large)
                         .frame(maxWidth: .infinity)
                 }
@@ -48,9 +50,11 @@ struct WorktreeInspector: View {
     private var actions: some View {
         HStack {
             Button("Terminal", systemImage: "terminal") { openInTerminal() }
+                .disabled(folderIsGone)
             Button("Finder", systemImage: "folder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: row.worktree.path)])
             }
+            .disabled(folderIsGone)
             if let url = row.review.webURL {
                 Button(openReviewTitle, systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
             }
@@ -58,6 +62,9 @@ struct WorktreeInspector: View {
         .labelStyle(.titleAndIcon)
         .controlSize(.regular)
     }
+
+    /// A worktree that git lists but whose folder is gone has nowhere to open.
+    private var folderIsGone: Bool { row.eligibility == .missing }
 
     private var reviewNoun: String { row.hosting == .github ? "PR" : "MR" }
     private var openReviewTitle: String { "Open \(reviewNoun)" }
@@ -77,7 +84,7 @@ struct WorktreeInspector: View {
             InspectorLine("Upstream") {
                 Text(row.status?.upstream ?? "—").lineLimit(1).truncationMode(.middle)
             }
-            InspectorLine("Changes") { Text(changes) }
+            InspectorLine("Changes") { Text(RowPresenter.changesLine(row)) }
             InspectorLine("Last commit") {
                 Text(row.status?.lastCommitDate.map(Self.relative) ?? "—")
             }
@@ -90,14 +97,6 @@ struct WorktreeInspector: View {
                 }
             }
         }
-    }
-
-    private var changes: String {
-        guard let status = row.status else { return "—" }
-        var parts: [String] = []
-        if status.modified > 0 { parts.append("\(status.modified) changes") }
-        if status.untracked > 0 { parts.append("\(status.untracked) untracked") }
-        return parts.isEmpty ? "Clean" : parts.joined(separator: ", ")
     }
 
     private var runningSection: some View {

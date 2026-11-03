@@ -59,7 +59,12 @@ public enum RowPresenter {
         }
     }
 
-    private static func changes(_ n: Int) -> String { "\(n) changes" }
+    private static func changes(_ n: Int) -> String { n == 1 ? "1 change" : "\(n) changes" }
+
+    /// The Changes line of the inspector: what the chips of the State column say, in one line.
+    public static func changesLine(_ row: WorktreeRow) -> String {
+        stateChips(row).map(\.text).joined(separator: ", ")
+    }
 
     /// What runs in a worktree, for the Running column: the groups without the shells, the most memory first, the same
     /// name once with `×N`, then the memory of all the groups, shells included. `nil` when there is nothing but shells.

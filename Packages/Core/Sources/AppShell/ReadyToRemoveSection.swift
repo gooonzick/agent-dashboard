@@ -36,8 +36,10 @@ struct ReadyToRemoveSection: View {
                 Text(hint).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Remove \(rows.count)…") {}  // Wired with the removal sheet.
+            // Task 14 wires the three buttons of this block to the removal sheet; until then they do nothing and are off.
+            Button("Remove \(rows.count)…") {}
                 .buttonStyle(.borderedProminent)
+                .disabled(true)
         }
     }
 
@@ -62,12 +64,14 @@ private struct ReadyRow: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
+            ReviewChip(review: row.review)
             if let text = RowPresenter.runningText(row.groups) {
                 RunningCell(groups: row.groups).help(text).foregroundStyle(.secondary)
             }
             Text(row.size.realSizeText).monospacedDigit().foregroundStyle(.secondary)
                 .frame(minWidth: 70, alignment: .trailing)
-            Button(needsStopping ? "Stop and remove…" : "Remove") {}  // Wired with the removal sheet.
+            Button(needsStopping ? "Stop and remove…" : "Remove") {}  // Task 14; see the header of the block.
+                .disabled(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
