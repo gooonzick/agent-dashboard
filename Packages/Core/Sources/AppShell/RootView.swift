@@ -296,8 +296,14 @@ struct MainView: View {
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        // The spinner stands on its own, outside the buttons' shared background, where it has room to breathe.
+        if isBusy || scanState.isScanning {
+            ToolbarItem {
+                ProgressView().controlSize(.small).padding(.horizontal, 4)
+            }
+            .sharedBackgroundVisibility(.hidden)
+        }
         ToolbarItemGroup {
-            if isBusy || scanState.isScanning { ProgressView().controlSize(.small) }
             Button("Fetch", systemImage: "arrow.down.circle", action: fetch)
                 .help("Fetch")
                 .disabled(isBusy || scanState.isScanning)

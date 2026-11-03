@@ -70,6 +70,9 @@ private struct DiskFooter: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        // The list scrolls under the footer: without a background of its own the rows show through its text.
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .combine)
     }
 }
