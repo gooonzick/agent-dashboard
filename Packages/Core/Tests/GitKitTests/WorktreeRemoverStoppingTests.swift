@@ -309,17 +309,20 @@ extension WorktreeRemoverTests {
             scene = try PretendScene()
         }
 
-        @Test(arguments: [
-            RemovalEligibility.mainWorktree,
-            .missing,
-            .blocked([.modified(1)]),
-            .blocked([.cantVerify, .lockedManually]),
-            .ready(needsStopping: true),  // something runs again, or still: it was to be stopped
-            .manual(needsStopping: true),
-        ])
-        func refusesEveryAnswerButReadyAndManualWithNothingRunning(answer: RemovalEligibility) async throws {
+        @Test(
+            arguments: [
+                RemovalEligibility.mainWorktree,
+                .missing,
+                .blocked([.modified(1)]),
+                .blocked([.cantVerify, .lockedManually]),
+                .ready(needsStopping: true),  // something runs again, or still: it was to be stopped
+                .manual(needsStopping: true),
+            ], [RemovalConfirmation.ready, .manual])
+        func refusesEveryAnswerButReadyAndManualWithNothingRunning(
+            answer: RemovalEligibility, confirmedAs: RemovalConfirmation
+        ) async throws {
             let remover = makeRemover()
-            let request = scene.request(deleteBranch: true)
+            let request = scene.request(deleteBranch: true, confirmedAs: confirmedAs)
 
             await #expect(throws: RemovalError.stateChanged(answer)) {
                 try await remover.remove(request, recheck: { answer })

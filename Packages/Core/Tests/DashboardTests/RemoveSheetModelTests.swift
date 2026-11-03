@@ -63,6 +63,15 @@ import Testing
                 == "Stop and remove 1 worktree")
     }
 
+    @Test func aLiveLockOwnerWithNoGroupNamesNothingToStop() {
+        // `needsStopping` without a group: the process that holds the lock runs, and the app stops no group for it.
+        let m = RemoveSheetModel(rows: [ready(private: 0, needsStopping: true)])
+        #expect(m.needsStopping)
+        #expect(m.processesToStop.isEmpty)
+        #expect(!m.stopsProcesses)
+        #expect(m.removeButtonTitle == "Remove 1 worktree")
+    }
+
     @Test func aProcessListedTwiceIsNamedOnce() {
         let leader = record(501, "claude")
         let m = RemoveSheetModel(rows: [ready(private: 0, groups: [group(leader: leader, members: [leader])])])

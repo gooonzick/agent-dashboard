@@ -22,7 +22,7 @@ struct RemoveSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             header
             items
-            if model.needsStopping { processes }
+            if model.stopsProcesses { processes }
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Also delete the local branches", isOn: $deleteBranches)
                 if model.offersDontAskAgain {

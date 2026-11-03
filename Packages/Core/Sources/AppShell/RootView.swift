@@ -100,6 +100,7 @@ struct MainView: View {
     @State private var removing: Set<String> = []
     /// A line for each worktree that was not removed, for the alert.
     @State private var failures: [String] = []
+    @FocusState private var searchIsFocused: Bool
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
@@ -131,6 +132,7 @@ struct MainView: View {
                 .navigationTitle(sidebar == .readyToRemove ? "Ready to remove" : "Projects")
                 .navigationSubtitle(sidebar == .readyToRemove ? "" : subtitle)
                 .searchable(text: $query, prompt: "Search")
+                .searchFocused($searchIsFocused)
                 .toolbar { toolbar }
                 .inspector(isPresented: $showsInspector) {
                     Group {
@@ -234,6 +236,9 @@ struct MainView: View {
     }
 
     private func perform(_ rows: [WorktreeRow], deleteBranches: Bool) {
+        // A second confirm of rows that are on their way already starts nothing, and reports nothing.
+        let rows = rows.filter { !removing.contains($0.id) }
+        guard !rows.isEmpty else { return }
         let ids = rows.map(\.id)
         removing.formUnion(ids)
         Task {
@@ -250,11 +255,16 @@ struct MainView: View {
         var commands = WindowCommands(
             showProjects: { sidebar.wrappedValue = .projects },
             showReadyToRemove: { sidebar.wrappedValue = .readyToRemove })
-        if !isBusy && !scanState.isScanning {
+        let sheetIsOpen = ask != nil
+        if WindowCommands.offersRefresh(isBusy: isBusy, isScanning: scanState.isScanning, sheetIsOpen: sheetIsOpen) {
             commands.refresh = refresh
             commands.fetchAll = fetch
         }
-        if let row = selectedRow, rowActions.canRemove(row) {
+        if let row = selectedRow,
+            WindowCommands.offersRemove(
+                selectionIsRemovable: rowActions.canRemove(row), searchIsFocused: searchIsFocused,
+                sheetIsOpen: sheetIsOpen)
+        {
             commands.removeSelection = { requestRemoval([row], fromRowButton: false) }
         }
         return commands

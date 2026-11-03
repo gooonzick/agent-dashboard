@@ -43,6 +43,18 @@ struct WindowCommands {
     var removeSelection: (() -> Void)?
     var showProjects: () -> Void
     var showReadyToRemove: () -> Void
+
+    /// Whether Remove… is offered: the selected row can be removed, the search field does not have the keys (⌘⌫ there
+    /// deletes to the start of the line, and the menu sees the key first), and no sheet is open (it would swap the
+    /// rows of the sheet under the user).
+    static func offersRemove(selectionIsRemovable: Bool, searchIsFocused: Bool, sheetIsOpen: Bool) -> Bool {
+        selectionIsRemovable && !searchIsFocused && !sheetIsOpen
+    }
+
+    /// Whether Refresh and Fetch All are offered: as their toolbar buttons are, and not while a sheet is open.
+    static func offersRefresh(isBusy: Bool, isScanning: Bool, sheetIsOpen: Bool) -> Bool {
+        !isBusy && !isScanning && !sheetIsOpen
+    }
 }
 
 extension FocusedValues {

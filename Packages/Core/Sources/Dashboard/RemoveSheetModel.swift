@@ -24,15 +24,18 @@ public struct RemoveSheetModel: Equatable {
     /// What the sheet says of the worktrees: that nothing will be lost, or that a request is not merged.
     public let message: String
     public let items: [Item]
-    /// Whether something runs in one of the worktrees, which is stopped first.
+    /// Whether something runs in one of the worktrees, as their eligibility says: a group of processes, or the live
+    /// owner of a lock, which no group may hold.
     public let needsStopping: Bool
     /// `name · pid N` for every process that is stopped first, each once, in the order of the rows and their groups.
     public let processesToStop: [String]
+    /// Whether any process is stopped first: the section that names them is shown, and the button says so.
+    public var stopsProcesses: Bool { !processesToStop.isEmpty }
     /// Whether "Don't ask again for merged, pushed worktrees" is offered: only when every row is `.ready`.
     public let offersDontAskAgain: Bool
     /// `Frees 0.8 GB`: what the worktrees that have been measured free. Empty when none of them has been.
     public let totalFrees: String
-    /// `Remove 3 worktrees`, or `Stop and remove 3 worktrees` when something is stopped first.
+    /// `Remove 3 worktrees`, or `Stop and remove 3 worktrees` when a process is stopped first.
     public let removeButtonTitle: String
 
     public init(rows: [WorktreeRow]) {
@@ -61,7 +64,7 @@ public struct RemoveSheetModel: Equatable {
 
         let measured = rows.compactMap(\.size)
         totalFrees = measured.isEmpty ? "" : "Frees " + SizeFormat.disk(measured.reduce(0) { $0 + $1.privateBytes })
-        removeButtonTitle = (needsStopping ? "Stop and remove " : "Remove ") + count
+        removeButtonTitle = (processesToStop.isEmpty ? "Remove " : "Stop and remove ") + count
     }
 
     /// Whether the per-row Remove button removes `rows` without the sheet: only when the user has said "Don't ask
