@@ -11,7 +11,7 @@ struct WorktreeInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 titleBlock
                 openButtons
                 gitSection
@@ -92,27 +92,39 @@ struct WorktreeInspector: View {
     private var runningSection: some View {
         InspectorSection("Running", trailing: RowPresenter.memory(of: row.groups)) {
             ForEach(row.groups) { group in
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Image(systemName: group.kind == .agentSession ? "sparkle" : "circle.fill")
                         .imageScale(group.kind == .agentSession ? .medium : .small)
                         .foregroundStyle(group.kind == .agentSession ? Color.orange : Color.secondary)
-                        .frame(width: 14)
+                        .frame(width: 16)
                     Text(group.title).lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: 8)
                     Text(SizeFormat.memory(group.totalFootprint)).monospacedDigit().foregroundStyle(.secondary)
                 }
                 .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
         }
     }
 
     private func diskSection(_ size: SizeInfo) -> some View {
-        InspectorSection("Disk") {
-            Text("\(SizeFormat.disk(size.privateBytes)) frees on removal, of \(SizeFormat.disk(size.apparentBytes)) on disk")
-                .font(.callout)
-            if let note = RowPresenter.diskNote(size) {
-                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        InspectorSection("Disk", separated: false) {
+            VStack(alignment: .leading, spacing: 8) {
+                // One sentence, as it always read: "<private> frees on removal, of <apparent> on disk".
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(SizeFormat.disk(size.privateBytes)).font(.title2.weight(.semibold)).monospacedDigit()
+                    Text("frees on removal, of \(SizeFormat.disk(size.apparentBytes)) on disk")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
+                }
+                .accessibilityElement(children: .combine)
+                ProgressView(value: Double(max(size.privateBytes, 0)), total: Double(max(size.apparentBytes, 1)))
+                    .progressViewStyle(.linear)
+                if let note = RowPresenter.diskNote(size) {
+                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(12)
         }
     }
 
@@ -124,14 +136,19 @@ struct WorktreeInspector: View {
     }
 }
 
+/// A titled group: a rounded box on an opaque fill, its rows split by separators that run the width of the box.
 private struct InspectorSection<Content: View>: View {
     let title: String
     var trailing: String?
+    var separated = true
     @ViewBuilder let content: Content
 
-    init(_ title: String, trailing: String? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: String, trailing: String? = nil, separated: Bool = true, @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.trailing = trailing
+        self.separated = separated
         self.content = content()
     }
 
@@ -142,7 +159,22 @@ private struct InspectorSection<Content: View>: View {
                 Spacer()
                 if let trailing { Text(trailing).font(.subheadline).monospacedDigit().foregroundStyle(.secondary) }
             }
-            content
+            .padding(.horizontal, 2)
+            VStack(alignment: .leading, spacing: 0) {
+                if separated {
+                    Group(subviews: content) { subviews in
+                        ForEach(subviews.indices, id: \.self) { index in
+                            if index > 0 { Divider() }
+                            subviews[index]
+                        }
+                    }
+                } else {
+                    content
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background.secondary, in: .rect(cornerRadius: 10))
+            .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.separator) }
         }
     }
 }
@@ -163,5 +195,7 @@ private struct InspectorLine<Value: View>: View {
             value
         }
         .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

@@ -31,6 +31,7 @@ struct ProjectsTable: View {
                 Text(node.row.size.realSizeText).monospacedDigit().frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 70, ideal: 80)
+            .alignment(.trailing)
         } rows: {
             ForEach(projects) { project in
                 if project.worktrees.isEmpty {
@@ -64,6 +65,8 @@ struct ProjectsTable: View {
     }
 }
 
+/// One line: the name, and for a repository its branch beside it in a secondary colour. A worktree shows only its name;
+/// its branch is in the inspector.
 private struct NameCell: View {
     let row: WorktreeRow
 
@@ -72,15 +75,16 @@ private struct NameCell: View {
             Image(systemName: row.worktree.isMain ? "folder" : "arrow.triangle.branch")
                 .foregroundStyle(row.worktree.isMain ? .blue : .secondary)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(row.displayName)
-                    .fontWeight(row.worktree.isMain ? .semibold : .regular)
-                    .lineLimit(1)
-                Text(RowPresenter.branchLine(row.status, branch: row.worktree.branch))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            label
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
+    }
+
+    private var label: Text {
+        guard row.worktree.isMain else { return Text(row.displayName) }
+        return Text(row.displayName).fontWeight(.semibold)
+            + Text("  " + RowPresenter.branchLine(row.status, branch: row.worktree.branch))
+            .font(.callout).foregroundStyle(.secondary)
     }
 }

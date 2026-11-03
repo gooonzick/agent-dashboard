@@ -37,6 +37,13 @@ import Testing
         #expect(try distinctColours(of: image) > 20)
     }
 
+    /// Twelve rows that are ready: the block shows four and `Show all 12`, and the table is still on the screen.
+    @Test func theReadyBlockWithManyRowsDraws() throws {
+        let image = try render(dark: false, selection: Fixtures.selected, ready: Fixtures.manyReady)
+        _ = try write(image, name: "ready-many-light.png")
+        #expect(try distinctColours(of: image) > 20)
+    }
+
     /// The sheet of the mockup ("Remove sheet — light"), and the sheet of a worktree whose request is not merged and in
     /// which something runs.
     @Test func theRemoveSheetDraws() throws {
@@ -63,10 +70,12 @@ import Testing
 
     // MARK: Drawing
 
-    private func render(dark: Bool, sidebar: SidebarItem = .projects, selection: String?) throws -> NSImage {
+    private func render(
+        dark: Bool, sidebar: SidebarItem = .projects, selection: String?, ready: [WorktreeRow] = Fixtures.ready
+    ) throws -> NSImage {
         let size = NSSize(width: 1440, height: 900)
         let main = MainView(
-            projects: Fixtures.projects, ready: Fixtures.ready, scanState: .idle,
+            projects: Fixtures.projects, ready: ready, scanState: .idle,
             lastUpdated: Date().addingTimeInterval(-120), isBusy: false, fetch: {}, refresh: {}, removal: .inert,
             sidebar: sidebar,
             selection: selection, disk: Fixtures.disk, readsDisk: false)
@@ -186,6 +195,16 @@ enum Fixtures {
             "dashboard", "/Users/me/Development/dashboard-worktrees/" + name, branch: "feat/" + name,
             review: .init(state: .merged, number: 1), status: .init(upstream: "origin/feat/" + name), groups: [],
             size: .init(apparentBytes: bytes * 10, privateBytes: bytes, computedAt: .now),
+            eligibility: .ready(needsStopping: false))
+    }
+
+    /// Twelve worktrees that are ready, as in the window that showed the block filling the screen.
+    static let manyReady: [WorktreeRow] = (1...12).map { n in
+        let name = "PYMEP-\(3000 + n)-some-merged-feature-\(n)"
+        return worktree(
+            "dashboard", "/Users/me/Development/dashboard-worktrees/" + name, branch: "feat/" + name,
+            review: .init(state: .merged, number: n), status: .init(upstream: "origin/feat/" + name), groups: [],
+            size: .init(apparentBytes: 2_000_000_000, privateBytes: 200_000_000 + Int64(n) * 10_000_000, computedAt: .now),
             eligibility: .ready(needsStopping: false))
     }
 

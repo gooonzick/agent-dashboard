@@ -194,7 +194,7 @@ struct MainView: View {
         case .readyToRemove:
             ScrollView {
                 if !ready.isEmpty {
-                    ReadyToRemoveSection(rows: ready, selection: $selection, actions: rowActions).padding(16)
+                    ReadyToRemoveSection(rows: ready, selection: $selection, actions: rowActions).padding(20)
                 }
             }
         case .projects:

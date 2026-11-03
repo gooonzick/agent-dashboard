@@ -12,11 +12,11 @@ struct ProjectsView: View {
     let actions: RowActions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             if !ready.isEmpty {
                 ReadyToRemoveSection(rows: ready, selection: $selection, actions: actions)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .padding(.horizontal, Self.margin)
+                    .padding(.bottom, 24)
             }
             HStack {
                 Text("All projects").font(.headline)
@@ -28,9 +28,13 @@ struct ProjectsView: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            .padding(.horizontal, 16)
-            .padding(.top, ready.isEmpty ? 12 : 0)
+            .padding(.horizontal, Self.margin)
+            .padding(.bottom, 10)
             ProjectsTable(projects: projects, selection: $selection, collapsed: $collapsed, actions: actions)
+                .contentMargins(.horizontal, Self.margin, for: .scrollContent)
         }
+        .padding(.top, Self.margin)
     }
+
+    private static let margin: CGFloat = 20
 }

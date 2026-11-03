@@ -152,6 +152,35 @@ public enum RowPresenter {
     }
 }
 
+/// The rows of the Ready to remove block that are on screen. Past `collapsedLimit` rows the block shows the first few and
+/// a last row that expands it; the header and the `Remove N…` button still count every row (Ruling 66).
+public struct ReadyListing: Equatable, Sendable {
+    public static let collapsedLimit = 4
+
+    /// Every row that is ready: what the header counts and what `Remove N…` acts on.
+    public let all: [WorktreeRow]
+    public let expanded: Bool
+
+    public init(_ all: [WorktreeRow], expanded: Bool) {
+        self.all = all
+        self.expanded = expanded
+    }
+
+    public var total: Int { all.count }
+
+    /// The rows that have a line of their own.
+    public var shown: [WorktreeRow] { expanded ? all : Array(all.prefix(Self.collapsedLimit)) }
+
+    /// The words of the last row: `Show all N` while some rows are hidden, `Show less` once all are shown; `nil` when
+    /// there are no more rows than fit.
+    public var toggleTitle: String? {
+        guard total > Self.collapsedLimit else { return nil }
+        return expanded ? "Show less" : "Show all \(total)"
+    }
+
+    public var removeTitle: String { "Remove \(total)…" }
+}
+
 /// The filter above the table.
 public enum ProjectFilter: String, CaseIterable, Sendable, Identifiable {
     case all = "All"

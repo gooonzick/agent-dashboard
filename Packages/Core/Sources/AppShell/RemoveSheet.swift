@@ -19,7 +19,7 @@ struct RemoveSheet: View {
     private static let processLineHeight: CGFloat = 18
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             header
             items
             if model.stopsProcesses { processes }
@@ -36,7 +36,7 @@ struct RemoveSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             footer
         }
-        .padding(20)
+        .padding(22)
         .frame(width: 460)
     }
 
@@ -72,13 +72,13 @@ struct RemoveSheet: View {
                     .font(.callout)
                     .padding(.horizontal, 12)
                     .frame(height: Self.itemHeight)
-                    if item.id != model.items.last?.id { Divider().padding(.leading, 12) }
+                    if item.id != model.items.last?.id { Divider() }
                 }
             }
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(height: min(CGFloat(model.items.count), 5.5) * Self.itemHeight)
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+        .background(.background.secondary, in: .rect(cornerRadius: 8))
     }
 
     /// Every process that is stopped first, by name and pid (Ruling 39). Past eight of them the list scrolls.
@@ -115,6 +115,5 @@ struct RemoveSheet: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
         }
-        .controlSize(.large)
     }
 }

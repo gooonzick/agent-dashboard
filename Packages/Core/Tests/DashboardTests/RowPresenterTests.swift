@@ -139,6 +139,46 @@ import Testing
     }
 }
 
+@Suite struct ReadyListingTests {
+    private func rows(_ n: Int) -> [WorktreeRow] { (1...max(n, 1)).prefix(n).map { named("PYMEP-\($0)") } }
+
+    @Test func fourRowsOrFewerAreAllShownWithNothingToExpand() {
+        for n in 0...4 {
+            let listing = ReadyListing(rows(n), expanded: false)
+            #expect(listing.shown.map(\.id) == rows(n).map(\.id))
+            #expect(listing.toggleTitle == nil)
+        }
+    }
+
+    @Test func pastFourOnlyTheFirstFourShowAndTheLastRowOffersAll() {
+        let all = rows(12)
+        let listing = ReadyListing(all, expanded: false)
+        #expect(listing.shown.map(\.id) == all.prefix(4).map(\.id))
+        #expect(listing.toggleTitle == "Show all 12")
+        #expect(ReadyListing(rows(5), expanded: false).toggleTitle == "Show all 5")
+    }
+
+    @Test func expandedShowsEveryRowAndOffersLess() {
+        let all = rows(12)
+        let listing = ReadyListing(all, expanded: true)
+        #expect(listing.shown.map(\.id) == all.map(\.id))
+        #expect(listing.toggleTitle == "Show less")
+    }
+
+    @Test func expandedWithFourOrFewerHasNothingToCollapse() {
+        #expect(ReadyListing(rows(4), expanded: true).toggleTitle == nil)
+        #expect(ReadyListing(rows(4), expanded: true).shown.count == 4)
+    }
+
+    @Test func theBlocksCountsStillCountEveryRow() {
+        let all = rows(12)
+        let listing = ReadyListing(all, expanded: false)
+        #expect(listing.total == 12)
+        #expect(listing.removeTitle == "Remove 12…")
+        #expect(listing.all.map(\.id) == all.map(\.id))
+    }
+}
+
 private func named(_ folder: String) -> WorktreeRow {
     WorktreeRow(
         repoPath: "/r", repoName: "r", worktree: Worktree(path: "/r-worktrees/" + folder, branch: folder), status: nil,
