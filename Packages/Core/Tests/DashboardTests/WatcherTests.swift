@@ -135,6 +135,38 @@ import Testing
         store.isWindowVisible = false
     }
 
+    @Test func aChangeInAKnownRepositoryLooksForNoNewRepositoryInIt() async throws {
+        // A build in a known repository changes thousands of folders: none of them is looked into (Ruling 70). A
+        // repository that appears in it without a `.git` of its own changing waits for the next scan.
+        let (disk, root) = try disk(["x/repo/.git", "x/repo/sub/moved/.git"], root: "x")
+        let scene = try Scene(scanner: FakeScanner(roots: [URL(filePath: root)]))
+        scene.addRepository(root + "/repo")
+        let store = await scene.startedStore()
+        scene.addRepository(root + "/repo/sub/moved")
+
+        scene.watcher.send([root + "/repo/sub", root + "/repo"], toWatchOf: root)
+        await scene.settle(store)
+
+        #expect(store.projects.map(\.path) == [root + "/repo"])
+        _ = disk
+    }
+
+    @Test func aKnownRepositoryInsideAnotherOneThatGoesDisappears() async throws {
+        let (disk, root) = try disk(["x/repo/.git", "x/repo/sub/nested/.git"], root: "x")
+        let scene = try Scene(scanner: FakeScanner(roots: [URL(filePath: root)]))
+        scene.addRepository(root + "/repo")
+        scene.addRepository(root + "/repo/sub/nested")
+        let store = await scene.startedStore()
+        #expect(store.projects.count == 2)
+
+        try FileManager.default.removeItem(atPath: root + "/repo/sub/nested")
+        scene.watcher.send([root + "/repo/sub"], toWatchOf: root)
+        await scene.settle(store)
+
+        #expect(store.projects.map(\.path) == [root + "/repo"])
+        _ = disk
+    }
+
     @Test func aChangeInTheGitFolderOfTheRepositoryReadsItAgain() async throws {
         let scene = try Scene(scanner: FakeScanner(roots: [URL(filePath: "/x")]))
         scene.addRepository("/x/repo")

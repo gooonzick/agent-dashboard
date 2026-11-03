@@ -66,6 +66,13 @@ struct RepositoryChanges: Sendable, Equatable {
     /// into) and the known repositories in it (a folder deleted or moved away with the repository in it). A folder that
     /// has a `.git` folder is added if a scan would find it (`RepoScanner.wouldFind`, which applies the exclusions
     /// below a root, never above it); a known repository whose `.git` folder is gone is gone.
+    ///
+    /// The roots are the whole disk, and most of what changes on it is of no interest here: the caches of the system
+    /// and the apps, which are excluded, and the builds in the repositories that are known. Those paths are passed
+    /// over before anything is read from the disk for them (Ruling 70): a path in an excluded folder (below every root
+    /// that lies in it), and the folders in a known repository, or the repository itself, which are looked at only for
+    /// the known repositories that they hold. So a repository that appears inside a known one without a `.git` of its
+    /// own changing, moved in say, is found by the next scan, not by the watch.
     @concurrent
     static func inspect(_ paths: [String], known: Set<String>, roots: [URL], rules: ExclusionRules) async -> Self {
         var changes = RepositoryChanges()
@@ -78,20 +85,30 @@ struct RepositoryChanges: Sendable, Equatable {
                 changes.added.insert(folder)
             }
         }
-        for path in paths {
+        for path in paths where !isExcluded(path, roots: roots, rules: rules) {
             let names = path.split(separator: "/", omittingEmptySubsequences: true)
             if let git = names.firstIndex(of: ".git") {
                 consider("/" + names[..<git].joined(separator: "/"))
                 continue
             }
+            for repo in known where isInside(repo, path) { consider(repo) }
+            guard !known.contains(where: { isInside(path, $0) }) else { continue }
             consider(path)
-            for repo in known where repo != path && isInside(repo, path) { consider(repo) }
             guard RepoScanner.walks(into: path, roots: roots, rules: rules) else { continue }
             for child in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] {
                 consider(path == "/" ? "/" + child : path + "/" + child)
             }
         }
         return changes
+    }
+
+    /// Whether `path` lies in a folder that `rules` exclude, and in no root inside that folder: a scan never looks
+    /// there. Paths alone are compared, and nothing is read from the disk.
+    private static func isExcluded(_ path: String, roots: [URL], rules: ExclusionRules) -> Bool {
+        rules.excludedPaths.contains { excluded in
+            excluded.hasPrefix("/") && isInside(path, excluded)
+                && !roots.contains { $0.path != excluded && isInside($0.path, excluded) && isInside(path, $0.path) }
+        }
     }
 
     private static func hasGitFolder(_ folder: String) -> Bool {
