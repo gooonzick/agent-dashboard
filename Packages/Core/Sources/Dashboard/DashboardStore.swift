@@ -56,6 +56,9 @@ struct Repository {
         didSet { if isWindowVisible != oldValue { visibilityChanged() } }
     }
 
+    /// What the user has set: the window reads and writes "Don't ask again for merged, pushed worktrees" here.
+    public var settings: SettingsStore { env.settings }
+
     /// The worktrees whose request is merged and that hold nothing unsaved: `.ready`, whether something runs in them or
     /// not.
     public var readyToRemove: [WorktreeRow] {
@@ -149,7 +152,8 @@ struct Repository {
             return
         }
 
-        let foundPaths = Set(found.map(\.path)).subtracting(hidden)
+        // Read again: a repository may have been hidden while the scan ran.
+        let foundPaths = Set(found.map(\.path)).subtracting(env.settings.hiddenRepos)
         let known = Set(repositories.keys)
         for path in known.subtracting(foundPaths).subtracting(during.added) { forget(path) }
         let added = Array(foundPaths.subtracting(known).subtracting(during.gone))
@@ -180,6 +184,19 @@ struct Repository {
         await refresh()
         await lookUpReviews(of: paths)
         lastUpdated = env.now()
+    }
+
+    /// Hides the repository at `repoPath`: it goes from the rows and from the watch, and from the cache, and the
+    /// settings keep it hidden, so that no scan brings it back. Showing it again is for the settings.
+    public func hide(repoPath: String) {
+        env.settings.hiddenRepos.insert(repoPath)
+        // A scan that is under way may have found it already.
+        changesDuringScan?.gone.insert(repoPath)
+        changesDuringScan?.added.remove(repoPath)
+        forget(repoPath)
+        publish()
+        updateWorktreeWatch()
+        saveCache()
     }
 
     // MARK: Reading

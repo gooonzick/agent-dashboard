@@ -125,6 +125,55 @@ import Testing
         #expect(scene.remover.requests.map(\.deleteBranch) == [false])
     }
 
+    // MARK: What the user confirmed (Ruling 57)
+
+    @Test func eachRowGoesToTheRemoverAsWhatItWasWhenItWasConfirmed() async throws {
+        let scene = try Scene()
+        let merged = linked("/x/wt-merged", branch: "merged")
+        let open = linked("/x/wt-open", branch: "open")
+        scene.addRepository("/x/repo", worktrees: [merged, open])
+        scene.reviews.answer("merged", ReviewInfo(state: .merged, number: 1, headSHA: sha("a")))
+        scene.reviews.answer("open", ReviewInfo(state: .open, number: 2))
+        let store = await scene.startedStore()
+        let rows = try [merged, open].map { try #require(store.row($0.path)) }
+        #expect(rows.map(\.eligibility) == [.ready(needsStopping: false), .manual(needsStopping: false)])
+
+        let outcomes = await store.remove(rows, deleteBranches: true)
+
+        #expect(outcomes == [.removed(merged.path), .removed(open.path)])
+        #expect(scene.remover.requests.map(\.confirmedAs) == [.ready, .manual])
+    }
+
+    @Test func aReadyRowWhoseRequestIsNoLongerKnownToBeMergedIsLeftAlone() async throws {
+        let scene = try readyScene()
+        let deleted = Counter()
+        scene.remover.onRemoval { _ in deleted.increment() }
+        let store = await scene.startedStore()
+        let row = try #require(store.row(worktree.path))
+        #expect(row.eligibility == .ready(needsStopping: false))
+        // The host cannot be asked by the time of the recheck.
+        scene.reviews.answer("feature", .unknown)
+
+        let outcomes = await store.remove([row], deleteBranches: true)
+
+        #expect(outcomes == [.failed(worktree.path, .stateChanged(.manual(needsStopping: false)))])
+        #expect(deleted.count == 0)
+    }
+
+    @Test func aBlockedRowIsNeverHandedToTheRemover() async throws {
+        let scene = try Scene()
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.git.update("/x/repo") { $0.statuses[worktree.path] = WorktreeStatus(upstream: "origin/x", modified: 1) }
+        let store = await scene.startedStore()
+        let row = try #require(store.row(worktree.path))
+        #expect(row.eligibility == .blocked([.modified(1)]))
+
+        let outcomes = await store.remove([row], deleteBranches: true)
+
+        #expect(outcomes == [.failed(worktree.path, .stateChanged(.blocked([.modified(1)])))])
+        #expect(scene.remover.requests.isEmpty)
+    }
+
     @Test func anErrorThatIsNoRemovalErrorIsReportedAsGitFailing() async throws {
         let scene = try readyScene()
         scene.remover.onRemoval { _ in throw CommandError.timedOut("git") }

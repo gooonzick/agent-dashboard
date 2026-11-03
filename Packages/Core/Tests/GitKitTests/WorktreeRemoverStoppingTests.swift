@@ -329,11 +329,15 @@ extension WorktreeRemoverTests {
         }
 
         @Test(arguments: [
-            RemovalEligibility.ready(needsStopping: false),
-            .manual(needsStopping: false),
+            (RemovalEligibility.ready(needsStopping: false), RemovalConfirmation.ready),
+            (.ready(needsStopping: false), .manual),
+            (.manual(needsStopping: false), .manual),
         ])
-        func carriesOnForReadyAndManualOnceNothingRuns(answer: RemovalEligibility) async throws {
-            try await makeRemover().remove(scene.request(deleteBranch: true), recheck: { answer })
+        func carriesOnForReadyAndManualOnceNothingRuns(
+            answer: RemovalEligibility, confirmedAs: RemovalConfirmation
+        ) async throws {
+            try await makeRemover().remove(
+                scene.request(deleteBranch: true, confirmedAs: confirmedAs), recheck: { answer })
 
             #expect(scene.runner.writes.map(\.first) == ["worktree", "branch"])
         }

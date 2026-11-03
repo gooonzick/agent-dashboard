@@ -8,11 +8,13 @@ extension DashboardStore {
     /// Removes the worktrees of `rows`, one after the other, and their local branches if `deleteBranches` is set, and
     /// says what became of each, in the order of `rows`.
     ///
-    /// Each goes to `WorktreeRemoving.remove` with the processes that the row shows, and with a recheck that reads
-    /// everything anew once they are stopped: `git fetch --prune`, then git, the host (its answers forgotten first) and
-    /// a fresh sample of the processes. Two removals in one repository never run at once, whoever asks for them. The
-    /// repository is read again after every one, whatever came of it. A worktree whose folder is gone never has its
-    /// branch deleted: it is only pruned (`prune`).
+    /// Each goes to `WorktreeRemoving.remove` with the processes that the row shows, confirmed as what the row says it
+    /// is (`.ready` or `.manual`: the recheck has to find at least that), and with a recheck that reads everything anew
+    /// once they are stopped: `git fetch --prune`, then git, the host (its answers forgotten first) and a fresh sample
+    /// of the processes. So `rows` are to be the rows as the user saw them when they confirmed, not as they are now. A
+    /// row that is blocked is refused here, and nothing is stopped for it. Two removals in one repository never run at
+    /// once, whoever asks for them. The repository is read again after every one, whatever came of it. A worktree whose
+    /// folder is gone never has its branch deleted: it is only pruned (`prune`).
     public func remove(_ rows: [WorktreeRow], deleteBranches: Bool) async -> [RemovalOutcome] {
         var outcomes: [RemovalOutcome] = []
         for row in rows {
@@ -36,9 +38,18 @@ extension DashboardStore {
     }
 
     private func removeOne(_ row: WorktreeRow, deleteBranch: Bool) async -> RemovalError? {
+        let confirmedAs: RemovalConfirmation
+        switch row.eligibility {
+        case .ready: confirmedAs = .ready
+        case .manual: confirmedAs = .manual
+        // Nothing that could be removed was confirmed: nothing is stopped for it, and the remover is not asked.
+        case .blocked: return .stateChanged(row.eligibility)
+        // The remover refuses these at once, before it stops anything. `.ready` asks the most of a recheck.
+        case .mainWorktree, .missing: confirmedAs = .ready
+        }
         let request = RemovalRequest(
             repo: URL(filePath: row.repoPath, directoryHint: .isDirectory), worktree: row.worktree,
-            deleteBranch: deleteBranch, stopGroups: row.groups)
+            deleteBranch: deleteBranch, stopGroups: row.groups, confirmedAs: confirmedAs)
         let repo = repositories[row.repoPath]
         let (reader, sampler, signaler, roots) = (reader, env.sampler, env.signaler, worktreeRoots)
         let (remote, kind) = (repo?.remote, repo?.kind)

@@ -1,0 +1,50 @@
+import SwiftUI
+
+/// The menu commands of the window: Refresh ⌘R, Fetch All ⇧⌘R, Remove… ⌘⌫, Projects ⌘1, Ready to remove ⌘2.
+///
+/// They act on the window that is in front, through what it publishes (`WindowCommands`). With no window, or while
+/// the window cannot do what a command asks, the command is off.
+public struct AppCommands: Commands {
+    @FocusedValue(\.windowCommands) private var window
+
+    public init() {}
+
+    public var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("Remove…") { window?.removeSelection?() }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(window?.removeSelection == nil)
+        }
+        CommandGroup(before: .toolbar) {
+            Button("Refresh") { window?.refresh?() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(window?.refresh == nil)
+            Button("Fetch All") { window?.fetchAll?() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(window?.fetchAll == nil)
+            Divider()
+            Button("Projects") { window?.showProjects() }
+                .keyboardShortcut("1", modifiers: .command)
+                .disabled(window == nil)
+            Button("Ready to remove") { window?.showReadyToRemove() }
+                .keyboardShortcut("2", modifiers: .command)
+                .disabled(window == nil)
+            Divider()
+        }
+    }
+}
+
+/// What the window offers the menu. A command that is `nil` is off: Refresh and Fetch All while a scan, a refresh or
+/// a fetch runs, as their toolbar buttons are; Remove… when the selected row cannot be removed.
+struct WindowCommands {
+    var refresh: (() -> Void)?
+    var fetchAll: (() -> Void)?
+    /// Opens the removal sheet for the selected row. Always the sheet, whatever "Don't ask again" says.
+    var removeSelection: (() -> Void)?
+    var showProjects: () -> Void
+    var showReadyToRemove: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var windowCommands: WindowCommands?
+}

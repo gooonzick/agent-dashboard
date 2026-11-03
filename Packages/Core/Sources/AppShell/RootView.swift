@@ -21,7 +21,19 @@ public struct RootView: View {
             fetch: { run { await store.fetchAll() } },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
             // nothing while another `start()` runs, which is why the button is off then.
-            refresh: { run { await store.start() } }, disk: nil, readsDisk: true
+            refresh: { run { await store.start() } },
+            removal: RemovalActions(
+                remove: { rows, deleteBranches in
+                    RowPresenter.failureLines(await store.remove(rows, deleteBranches: deleteBranches), rows: rows)
+                },
+                prune: { row in
+                    guard let error = await store.prune(repoPath: row.repoPath) else { return [] }
+                    return RowPresenter.failureLines([.failed(row.id, error)], rows: [row])
+                },
+                hide: { store.hide(repoPath: $0) },
+                skipsConfirmation: { store.settings.skipConfirmForMergedPushed },
+                skipConfirmationFromNowOn: { store.settings.skipConfirmForMergedPushed = true }),
+            disk: nil, readsDisk: true
         )
         .background(WindowVisibility { store.isWindowVisible = $0 })
         .task { run { await store.start() } }
@@ -37,6 +49,31 @@ public struct RootView: View {
     }
 }
 
+/// What the window asks of the store to remove, prune and hide, and the setting that lets a removal skip the sheet.
+/// Removing and pruning answer with a line for each worktree that was not removed (`RowPresenter.failureLines`).
+struct RemovalActions {
+    var remove: @MainActor (_ rows: [WorktreeRow], _ deleteBranches: Bool) async -> [String]
+    var prune: @MainActor (_ row: WorktreeRow) async -> [String]
+    var hide: @MainActor (_ repoPath: String) -> Void
+    /// "Don't ask again for merged, pushed worktrees".
+    var skipsConfirmation: @MainActor () -> Bool
+    var skipConfirmationFromNowOn: @MainActor () -> Void
+
+    /// Removes nothing: for the renders.
+    static var inert: RemovalActions {
+        RemovalActions(
+            remove: { _, _ in [] }, prune: { _ in [] }, hide: { _ in }, skipsConfirmation: { false },
+            skipConfirmationFromNowOn: {})
+    }
+}
+
+/// A removal that waits for the user to confirm it in the sheet.
+private struct RemovalAsk: Identifiable {
+    let id = UUID()
+    /// The rows as they were when the user asked: what they confirm is what these say.
+    let rows: [WorktreeRow]
+}
+
 /// The sidebar, the table and the inspector, from plain values: what the previews and the renders feed it.
 struct MainView: View {
     let projects: [ProjectRow]
@@ -46,6 +83,7 @@ struct MainView: View {
     let isBusy: Bool
     let fetch: () -> Void
     let refresh: () -> Void
+    let removal: RemovalActions
 
     @State private var sidebar: SidebarItem?
     @State private var selection: String?
@@ -57,11 +95,17 @@ struct MainView: View {
     /// Whether the disk is read, now and every 30 seconds. Renders turn it off and pass a disk of their own.
     private let readsDisk: Bool
     @State private var now = Date()
+    @State private var ask: RemovalAsk?
+    /// The worktrees whose removal is under way.
+    @State private var removing: Set<String> = []
+    /// A line for each worktree that was not removed, for the alert.
+    @State private var failures: [String] = []
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
-        fetch: @escaping () -> Void, refresh: @escaping () -> Void, sidebar: SidebarItem = .projects,
-        selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?, readsDisk: Bool
+        fetch: @escaping () -> Void, refresh: @escaping () -> Void, removal: RemovalActions,
+        sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
+        readsDisk: Bool
     ) {
         self.projects = projects
         self.ready = ready
@@ -70,6 +114,7 @@ struct MainView: View {
         self.isBusy = isBusy
         self.fetch = fetch
         self.refresh = refresh
+        self.removal = removal
         _sidebar = State(initialValue: sidebar)
         _selection = State(initialValue: selection)
         _showsInspector = State(initialValue: showsInspector)
@@ -89,10 +134,28 @@ struct MainView: View {
                 .toolbar { toolbar }
                 .inspector(isPresented: $showsInspector) {
                     Group {
-                        if let row = selectedRow { WorktreeInspector(row: row) } else { Color.clear }
+                        if let row = selectedRow { WorktreeInspector(row: row, actions: rowActions) } else { Color.clear }
                     }
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
+        }
+        .focusedSceneValue(\.windowCommands, commands)
+        .sheet(item: $ask) { ask in
+            RemoveSheet(
+                model: RemoveSheetModel(rows: ask.rows), cancel: { self.ask = nil },
+                confirm: { deleteBranches, dontAskAgain in
+                    self.ask = nil
+                    // Only once the user confirms: Cancel leaves the setting as it was.
+                    if dontAskAgain { removal.skipConfirmationFromNowOn() }
+                    perform(ask.rows, deleteBranches: deleteBranches)
+                })
+        }
+        .alert(
+            "Some worktrees were not removed",
+            isPresented: Binding(get: { !failures.isEmpty }, set: { if !$0 { failures = [] } })
+        ) {
+        } message: {
+            Text(failures.joined(separator: "\n"))
         }
         .onChange(of: projects) { _, projects in
             if case .repository(let path) = sidebar, !projects.contains(where: { $0.path == path }) {
@@ -118,7 +181,7 @@ struct MainView: View {
         case .readyToRemove:
             ScrollView {
                 if !ready.isEmpty {
-                    ReadyToRemoveSection(rows: ready, selection: $selection).padding(16)
+                    ReadyToRemoveSection(rows: ready, selection: $selection, actions: rowActions).padding(16)
                 }
             }
         case .projects:
@@ -132,7 +195,7 @@ struct MainView: View {
         ProjectsView(
             projects: ProjectFilter.visible(projects, filter: filter, query: query, repoPath: repoPath),
             ready: repoPath == nil ? ready : ready.filter { $0.repoPath == repoPath },
-            filter: $filter, selection: $selection, collapsed: $collapsed)
+            filter: $filter, selection: $selection, collapsed: $collapsed, actions: rowActions)
     }
 
     private var selectedRow: WorktreeRow? {
@@ -142,6 +205,59 @@ struct MainView: View {
             if let row = project.worktrees.first(where: { $0.id == selection }) { return row }
         }
         return nil
+    }
+
+    // MARK: Removal
+
+    private var rowActions: RowActions {
+        RowActions(
+            removing: removing, remove: { rows, fromRowButton in requestRemoval(rows, fromRowButton: fromRowButton) },
+            prune: { row in
+                Task { failures += await removal.prune(row) }
+            },
+            hide: { removal.hide($0) })
+    }
+
+    /// The sheet for `rows`, or the removal at once for the per-row Remove when "Don't ask again" lets it skip the
+    /// sheet. Rows that cannot be removed, or are already on their way, are left out.
+    private func requestRemoval(_ rows: [WorktreeRow], fromRowButton: Bool) {
+        let rows = rows.filter(rowActions.canRemove)
+        guard !rows.isEmpty else { return }
+        if RemoveSheetModel.skipsSheet(
+            for: rows, fromRowButton: fromRowButton, skipSetting: removal.skipsConfirmation())
+        {
+            // As the sheet would have it: "Also delete the local branches" is on there.
+            perform(rows, deleteBranches: true)
+        } else {
+            ask = RemovalAsk(rows: rows)
+        }
+    }
+
+    private func perform(_ rows: [WorktreeRow], deleteBranches: Bool) {
+        let ids = rows.map(\.id)
+        removing.formUnion(ids)
+        Task {
+            let lines = await removal.remove(rows, deleteBranches)
+            removing.subtract(ids)
+            failures += lines
+        }
+    }
+
+    // MARK: Commands
+
+    private var commands: WindowCommands {
+        let sidebar = $sidebar
+        var commands = WindowCommands(
+            showProjects: { sidebar.wrappedValue = .projects },
+            showReadyToRemove: { sidebar.wrappedValue = .readyToRemove })
+        if !isBusy && !scanState.isScanning {
+            commands.refresh = refresh
+            commands.fetchAll = fetch
+        }
+        if let row = selectedRow, rowActions.canRemove(row) {
+            commands.removeSelection = { requestRemoval([row], fromRowButton: false) }
+        }
+        return commands
     }
 
     // MARK: Toolbar

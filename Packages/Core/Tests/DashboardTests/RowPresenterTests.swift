@@ -94,6 +94,55 @@ import Testing
             RowPresenter.diskNote(SizeInfo(apparentBytes: 1_000_000_000, privateBytes: 250_000_000, computedAt: .now))
                 == nil)
     }
+
+    // MARK: Why a removal did not go through
+
+    @Test func everyRemovalErrorReadsAsASentence() {
+        #expect(
+            RowPresenter.failureReason(.stateChanged(.manual(needsStopping: false)))
+                == "Something changed since you looked, so it was left alone.")
+        #expect(
+            RowPresenter.failureReason(.stateChanged(.ready(needsStopping: true)))
+                == "Something changed since you looked, so it was left alone.")
+        #expect(
+            RowPresenter.failureReason(.stateChanged(.blocked([.cantVerify])))
+                == "Could not reach the remote to confirm everything is pushed.")
+        #expect(
+            RowPresenter.failureReason(.hiddenWork("another worktree is inside this one: tmp/x"))
+                == "another worktree is inside this one: tmp/x")
+        #expect(RowPresenter.failureReason(.processStillRunning(4242)).contains("pid 4242"))
+        #expect(
+            RowPresenter.failureReason(.gitRefused("fatal: contains modified or untracked files"))
+                == "fatal: contains modified or untracked files")
+        #expect(
+            RowPresenter.failureReason(.branchNotDeleted("error: branch is checked out"))
+                == "The folder is gone, but the branch was kept: error: branch is checked out")
+        #expect(
+            RowPresenter.failureReason(.worktreeChanged)
+                == "The worktree changed since you looked, so it was left alone.")
+        // A removal that was given up reaches the window as git's failure, with the store's sentence.
+        #expect(
+            RowPresenter.failureReason(.gitRefused("The removal was given up before anything was deleted."))
+                == "The removal was given up before anything was deleted.")
+    }
+
+    @Test func oneLinePerFailureWithTheNameOfTheWorktree() {
+        let rows = [named("PYMEP-1"), named("PYMEP-2"), named("PYMEP-3")]
+        let outcomes: [RemovalOutcome] = [
+            .removed(rows[0].id), .failed(rows[1].id, .worktreeChanged), .failed(rows[2].id, .processStillRunning(7)),
+        ]
+        let lines = RowPresenter.failureLines(outcomes, rows: rows)
+        #expect(lines.count == 2)
+        #expect(lines.first == "PYMEP-2: The worktree changed since you looked, so it was left alone.")
+        #expect(lines.last?.hasPrefix("PYMEP-3: ") == true)
+        #expect(RowPresenter.failureLines([.removed(rows[0].id)], rows: rows).isEmpty)
+    }
+}
+
+private func named(_ folder: String) -> WorktreeRow {
+    WorktreeRow(
+        repoPath: "/r", repoName: "r", worktree: Worktree(path: "/r-worktrees/" + folder, branch: folder), status: nil,
+        review: .none, hosting: nil, groups: [], size: nil, eligibility: .ready(needsStopping: false))
 }
 
 @Suite struct ProjectFilterTests {

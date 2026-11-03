@@ -44,8 +44,12 @@ struct RemovalScene: Sendable {
         return found
     }
 
-    func request(deleteBranch: Bool = true, stopping groups: [ProcessGroup] = []) async throws -> RemovalRequest {
-        RemovalRequest(repo: repo, worktree: try await worktree(), deleteBranch: deleteBranch, stopGroups: groups)
+    func request(
+        deleteBranch: Bool = true, stopping groups: [ProcessGroup] = [], confirmedAs: RemovalConfirmation = .ready
+    ) async throws -> RemovalRequest {
+        RemovalRequest(
+            repo: repo, worktree: try await worktree(), deleteBranch: deleteBranch, stopGroups: groups,
+            confirmedAs: confirmedAs)
     }
 
     /// The paths of all the worktrees that git lists, the main one included.
@@ -229,8 +233,12 @@ struct PretendScene {
             answer: answer)
     }
 
-    func request(deleteBranch: Bool = false, stopping groups: [ProcessGroup] = []) -> RemovalRequest {
-        RemovalRequest(repo: Self.repo, worktree: worktree, deleteBranch: deleteBranch, stopGroups: groups)
+    func request(
+        deleteBranch: Bool = false, stopping groups: [ProcessGroup] = [], confirmedAs: RemovalConfirmation = .ready
+    ) -> RemovalRequest {
+        RemovalRequest(
+            repo: Self.repo, worktree: worktree, deleteBranch: deleteBranch, stopGroups: groups,
+            confirmedAs: confirmedAs)
     }
 }
 

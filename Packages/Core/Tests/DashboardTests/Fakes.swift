@@ -364,7 +364,8 @@ func process(_ pid: Int32, parent: Int32 = 1, name: String = "node", cwd: String
 }
 
 /// Removes worktrees as `WorktreeRemoving` promises: the main worktree and a missing one are refused, then `recheck`
-/// is asked once, and only `.ready` or `.manual` with nothing running goes on, to `removal`.
+/// is asked once, and only `.ready`, or `.manual` for a request that was confirmed as manual, with nothing running goes
+/// on, to `removal`.
 final class FakeRemover: WorktreeRemoving {
     private struct State {
         var requests: [RemovalRequest] = []
@@ -414,8 +415,8 @@ final class FakeRemover: WorktreeRemoving {
         guard !request.worktree.isPrunable else { throw RemovalError.stateChanged(.missing) }
         let eligibility = await recheck()
         state.withLock { $0.rechecks.append(eligibility) }
-        switch eligibility {
-        case .ready(needsStopping: false), .manual(needsStopping: false): break
+        switch (eligibility, request.confirmedAs) {
+        case (.ready(needsStopping: false), _), (.manual(needsStopping: false), .manual): break
         default: throw RemovalError.stateChanged(eligibility)
         }
         try await removal(request)

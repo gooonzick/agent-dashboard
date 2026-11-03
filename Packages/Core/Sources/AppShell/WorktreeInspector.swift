@@ -7,19 +7,20 @@ import SwiftUI
 /// The right side: what is known of the selected worktree.
 struct WorktreeInspector: View {
     let row: WorktreeRow
+    let actions: RowActions
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 titleBlock
-                actions
+                openButtons
                 gitSection
                 if !row.groups.isEmpty { runningSection }
                 if let size = row.size { diskSection(size) }
                 if !row.worktree.isMain {
-                    // Task 14 wires this to the removal sheet; until then it does nothing and is off.
-                    Button("Remove worktree…") {}
-                        .disabled(true)
+                    // Always the sheet: a worktree removed from here may be `.manual`, whose request is not merged.
+                    Button("Remove worktree…", systemImage: "trash", role: .destructive) { actions.remove([row], false) }
+                        .disabled(!actions.canRemove(row))
                         .controlSize(.large)
                         .frame(maxWidth: .infinity)
                 }
@@ -47,16 +48,16 @@ struct WorktreeInspector: View {
         }
     }
 
-    private var actions: some View {
+    private var openButtons: some View {
         HStack {
-            Button("Terminal", systemImage: "terminal") { openInTerminal() }
+            Button("Terminal", systemImage: "terminal") { WorktreeOpener.openInTerminal(row) }
                 .disabled(folderIsGone)
-            Button("Finder", systemImage: "folder") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: row.worktree.path)])
-            }
-            .disabled(folderIsGone)
+            Button("Finder", systemImage: "folder") { WorktreeOpener.revealInFinder(row) }
+                .disabled(folderIsGone)
             if let url = row.review.webURL {
-                Button(openReviewTitle, systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                Button(WorktreeOpener.openReviewTitle(row), systemImage: "arrow.up.right.square") {
+                    NSWorkspace.shared.open(url)
+                }
             }
         }
         .labelStyle(.titleAndIcon)
@@ -65,17 +66,6 @@ struct WorktreeInspector: View {
 
     /// A worktree that git lists but whose folder is gone has nowhere to open.
     private var folderIsGone: Bool { row.eligibility == .missing }
-
-    private var reviewNoun: String { row.hosting == .github ? "PR" : "MR" }
-    private var openReviewTitle: String { "Open \(reviewNoun)" }
-
-    private func openInTerminal() {
-        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
-            return
-        }
-        NSWorkspace.shared.open(
-            [URL(filePath: row.worktree.path)], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
-    }
 
     // MARK: Sections
 

@@ -14,13 +14,29 @@ public struct RemovalRequest: Sendable {
     public let deleteBranch: Bool
     /// The processes that run in the worktree and are stopped first.
     public let stopGroups: [ProcessGroup]
+    /// What the worktree was when the user asked for it to go, and so the least that the recheck has to find. It has
+    /// no default: a request that is made without saying it would be taken for one that was confirmed as something.
+    public let confirmedAs: RemovalConfirmation
 
-    public init(repo: URL, worktree: Worktree, deleteBranch: Bool, stopGroups: [ProcessGroup]) {
+    public init(
+        repo: URL, worktree: Worktree, deleteBranch: Bool, stopGroups: [ProcessGroup], confirmedAs: RemovalConfirmation
+    ) {
         self.repo = repo
         self.worktree = worktree
         self.deleteBranch = deleteBranch
         self.stopGroups = stopGroups
+        self.confirmedAs = confirmedAs
     }
+}
+
+/// What the user confirmed that a worktree is, when they asked for it to be removed: the eligibility that it had then,
+/// as far as it matters for the recheck.
+public enum RemovalConfirmation: Sendable, Equatable {
+    /// `.ready`: its request is merged. The user may not have seen a sheet ("Don't ask again"), and was told, if
+    /// they were, that the request is merged. A recheck that says `.manual` does not do for it.
+    case ready
+    /// `.manual`: the user removed it knowing that its request is not merged, or that nobody can say.
+    case manual
 }
 
 /// Why a removal did not go through, or not all the way. What is left of it is said for each case, and a case that
@@ -29,7 +45,8 @@ public enum RemovalError: Error, Equatable {
     /// The worktree is not one that may be removed. It is the main one, or its folder is gone, which is for `prune`: a
     /// request for either is answered at once, with `.mainWorktree` or `.missing`, and so is one whose folder turns out
     /// to be gone when the removal looks at it again. Or the recheck, which looks at its state once more after the
-    /// processes are stopped, did not answer `.ready` or `.manual` with nothing left to stop. Nothing was changed.
+    /// processes are stopped, did not answer `.ready`, or `.manual` for a request that was confirmed as manual, with
+    /// nothing left to stop. Nothing was changed.
     case stateChanged(RemovalEligibility)
     /// Git refused, or failed, to do what it was asked: list the worktrees, unlock or remove the worktree, or prune.
     /// What it said, for people to read. The worktree is as it was, unless git failed halfway through deleting its
@@ -62,8 +79,10 @@ public protocol WorktreeRemoving: Sendable {
     /// Removes the worktree of `request`. Each of these steps that fails ends the removal there.
     ///
     /// 1. The processes of `request.stopGroups` are stopped.
-    /// 2. `recheck` is called, just once, and must read the state of the worktree anew. If it answers anything but
-    ///    `.ready` or `.manual`, or answers that something still runs (`needsStopping`), the removal ends with
+    /// 2. `recheck` is called, just once, and must read the state of the worktree anew. It has to be at least what
+    ///    the user confirmed (`request.confirmedAs`): `.ready` with nothing running goes on whatever was confirmed, and
+    ///    `.manual` with nothing running goes on only for a request that was confirmed as `.manual`. Any other answer,
+    ///    one that says that something still runs (`needsStopping`) included, ends the removal with
     ///    `RemovalError.stateChanged` and nothing is changed. The processes of step 1 may have been stopped by then:
     ///    that cannot be undone.
     /// 3. The worktree is looked at once more, as git lists it and as it is on the disk: it has to be the one that the
@@ -140,12 +159,14 @@ public struct WorktreeRemover: WorktreeRemoving {
         try await stop(request.stopGroups)
 
         // Once the processes are stopped nothing is left to stop. A recheck that still sees something run, or run
-        // again, is not looking at the worktree that was to be removed.
+        // again, is not looking at the worktree that was to be removed. And it has to be at least as good as what the
+        // user confirmed: a worktree that was removed as merged, perhaps without a sheet, whose request the host does
+        // not call merged now, was never confirmed as anything else.
         let eligibility = await recheck()
-        switch eligibility {
-        case .ready(needsStopping: false), .manual(needsStopping: false):
+        switch (eligibility, request.confirmedAs) {
+        case (.ready(needsStopping: false), _), (.manual(needsStopping: false), .manual):
             break
-        case .ready, .manual, .mainWorktree, .missing, .blocked:
+        case (.ready, _), (.manual, _), (.mainWorktree, _), (.missing, _), (.blocked, _):
             throw RemovalError.stateChanged(eligibility)
         }
         // The last moment to give up. A caller who has gone does not get a folder deleted.

@@ -119,6 +119,57 @@ import Testing
         #expect(try await scene.branchExists())  // the branch may hold commits that no remote has: pruning keeps it
     }
 
+    // MARK: What the user confirmed (Ruling 57)
+
+    @Test func aWorktreeConfirmedAsReadyIsLeftAloneWhenTheRecheckSaysManual() async throws {
+        // The user removed it as merged, perhaps without a sheet ("Don't ask again"); by the time of the recheck the
+        // host no longer says merged, or cannot be asked. Nobody confirmed removing a worktree whose request is not
+        // merged.
+        let scene = try await sandbox.makeRemovalScene()
+        let request = try await scene.request(confirmedAs: .ready)
+        let runner = WatchedRunner(wrapping: sandbox.runner)
+
+        await #expect(throws: RemovalError.stateChanged(.manual(needsStopping: false))) {
+            try await sandbox.makeRemover(through: runner).remove(
+                request, recheck: { .manual(needsStopping: false) })
+        }
+
+        #expect(runner.calls.isEmpty)  // not a single git command
+        #expect(scene.folderExists)
+        #expect(try await scene.branchExists())
+    }
+
+    @Test func aWorktreeConfirmedAsManualIsRemovedWhenTheRecheckSaysManual() async throws {
+        let scene = try await sandbox.makeRemovalScene()
+
+        try await remover.remove(
+            try await scene.request(confirmedAs: .manual), recheck: { .manual(needsStopping: false) })
+
+        #expect(!scene.folderExists)
+        #expect(try await !scene.branchExists())
+    }
+
+    @Test func aWorktreeConfirmedAsManualIsRemovedWhenItHasBeenMergedSince() async throws {
+        let scene = try await sandbox.makeRemovalScene()
+
+        try await remover.remove(try await scene.request(confirmedAs: .manual), recheck: stillReady)
+
+        #expect(!scene.folderExists)
+        #expect(try await !scene.branchExists())
+    }
+
+    @Test func aWorktreeConfirmedAsManualIsLeftAloneWhenSomethingRunsAgain() async throws {
+        let scene = try await sandbox.makeRemovalScene()
+        let request = try await scene.request(confirmedAs: .manual)
+
+        await #expect(throws: RemovalError.stateChanged(.manual(needsStopping: true))) {
+            try await remover.remove(request, recheck: { .manual(needsStopping: true) })
+        }
+
+        #expect(scene.folderExists)
+        #expect(try await scene.branchExists())
+    }
+
     // MARK: What git is asked
 
     @Test func anUntrackedFileStopsTheRemovalWhateverTheGitConfigurationSays() async throws {
@@ -223,7 +274,8 @@ import Testing
             runner: runner, signaler: signaler, sampler: ScriptedSampler(always: [running]))
         let rechecks = Recorder<Void>()
         let request = RemovalRequest(
-            repo: scene.repo, worktree: main, deleteBranch: true, stopGroups: [processGroup(running)])
+            repo: scene.repo, worktree: main, deleteBranch: true, stopGroups: [processGroup(running)],
+            confirmedAs: .ready)
 
         await #expect(throws: RemovalError.stateChanged(.mainWorktree)) {
             try await remover.remove(

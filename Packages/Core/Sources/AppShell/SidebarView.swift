@@ -52,7 +52,6 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let disk { DiskFooter(disk: disk) }
         }
-        .background { ShortcutButtons(selection: $selection) }
     }
 }
 
@@ -72,20 +71,5 @@ private struct DiskFooter: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// ⌘1 and ⌘2, which pick the two sections of the sidebar.
-private struct ShortcutButtons: View {
-    @Binding var selection: SidebarItem?
-
-    var body: some View {
-        VStack {
-            Button("Projects") { selection = .projects }.keyboardShortcut("1")
-            Button("Ready to remove") { selection = .readyToRemove }.keyboardShortcut("2")
-        }
-        .opacity(0)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }

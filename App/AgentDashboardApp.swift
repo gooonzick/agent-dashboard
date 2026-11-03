@@ -13,5 +13,9 @@ struct AgentDashboardApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .defaultSize(width: 1440, height: 900)
+        .commands {
+            AppCommands()
+            InspectorCommands()
+        }
     }
 }

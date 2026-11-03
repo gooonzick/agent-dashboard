@@ -15,6 +15,7 @@ struct ProjectsTable: View {
     @Binding var selection: String?
     /// The repositories that are closed: a repository that has just been found is open.
     @Binding var collapsed: Set<String>
+    let actions: RowActions
 
     var body: some View {
         Table(of: TableNode.self, selection: $selection) {
@@ -41,6 +42,19 @@ struct ProjectsTable: View {
                 }
             }
         }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if ids.count == 1, let id = ids.first, let row = row(id) {
+                RowContextMenu(row: row, actions: actions)
+            }
+        }
+    }
+
+    private func row(_ id: String) -> WorktreeRow? {
+        for project in projects {
+            if project.main.id == id { return project.main }
+            if let row = project.worktrees.first(where: { $0.id == id }) { return row }
+        }
+        return nil
     }
 
     private func expansion(of id: String) -> Binding<Bool> {

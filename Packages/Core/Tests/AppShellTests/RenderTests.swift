@@ -37,13 +37,29 @@ import Testing
         #expect(try distinctColours(of: image) > 20)
     }
 
+    /// The sheet of the mockup ("Remove sheet — light"), and the sheet of a worktree whose request is not merged and in
+    /// which something runs.
+    @Test func theRemoveSheetDraws() throws {
+        let sheet = RemoveSheet(model: RemoveSheetModel(rows: Fixtures.sheetRows), cancel: {}, confirm: { _, _ in })
+        let image = try snapshot(sheet.background(Color(nsColor: .windowBackgroundColor)), dark: false)
+        _ = try write(image, name: "remove-sheet-light.png")
+        #expect(try distinctColours(of: image) > 10)
+
+        let stopping = RemoveSheet(
+            model: RemoveSheetModel(rows: [Fixtures.manualRunning]), cancel: {}, confirm: { _, _ in })
+        let other = try snapshot(stopping.background(Color(nsColor: .windowBackgroundColor)), dark: false)
+        _ = try write(other, name: "remove-sheet-stopping-light.png")
+        #expect(try distinctColours(of: other) > 10)
+    }
+
     // MARK: Drawing
 
     private func render(dark: Bool, sidebar: SidebarItem = .projects, selection: String?) throws -> NSImage {
         let size = NSSize(width: 1440, height: 900)
         let main = MainView(
             projects: Fixtures.projects, ready: Fixtures.ready, scanState: .idle,
-            lastUpdated: Date().addingTimeInterval(-120), isBusy: false, fetch: {}, refresh: {}, sidebar: sidebar,
+            lastUpdated: Date().addingTimeInterval(-120), isBusy: false, fetch: {}, refresh: {}, removal: .inert,
+            sidebar: sidebar,
             selection: selection, disk: Fixtures.disk, readsDisk: false)
         return try snapshot(main, size: size, dark: dark)
     }
@@ -55,9 +71,12 @@ import Testing
         try snapshot(PanesFixture(), size: NSSize(width: 1440, height: 900), dark: dark)
     }
 
-    private func snapshot<Content: View>(_ content: Content, size: NSSize, dark: Bool) throws -> NSImage {
+    /// Draws `content` at `size`, or at the size that it wants when there is none.
+    private func snapshot<Content: View>(_ content: Content, size: NSSize? = nil, dark: Bool) throws -> NSImage {
         let host = NSHostingView(
-            rootView: content.frame(width: size.width, height: size.height).preferredColorScheme(dark ? .dark : .light))
+            rootView: content.frame(width: size?.width, height: size?.height)
+                .preferredColorScheme(dark ? .dark : .light))
+        let size = size ?? host.fittingSize
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -131,9 +150,9 @@ private struct PanesFixture: View {
             Divider()
             ProjectsView(
                 projects: Fixtures.projects, ready: Fixtures.ready, filter: $filter, selection: $selection,
-                collapsed: $collapsed)
+                collapsed: $collapsed, actions: .inert)
             Divider()
-            WorktreeInspector(row: Fixtures.projects[0].worktrees[0]).frame(width: 320)
+            WorktreeInspector(row: Fixtures.projects[0].worktrees[0], actions: .inert).frame(width: 320)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -147,6 +166,39 @@ enum Fixtures {
 
     static let ready: [WorktreeRow] = projects.flatMap(\.worktrees).filter {
         if case .ready = $0.eligibility { true } else { false }
+    }
+
+    /// The three worktrees of the mockup of the sheet.
+    static let sheetRows: [WorktreeRow] = [
+        ("PYMEP-3191-statements-analytics-events", 200_000_000), ("PYMEP-1907-team-employee-analytics-events", 300_000_000),
+        ("PYMEP-3231-events-for-ahorro-accounts", 300_000_000),
+    ].map { name, bytes in
+        worktree(
+            "dashboard", "/Users/me/Development/dashboard-worktrees/" + name, branch: "feat/" + name,
+            review: .init(state: .merged, number: 1), status: .init(upstream: "origin/feat/" + name), groups: [],
+            size: .init(apparentBytes: bytes * 10, privateBytes: bytes, computedAt: .now),
+            eligibility: .ready(needsStopping: false))
+    }
+
+    /// A worktree whose request is open, with a session of Claude Code and a tmux server in it.
+    static let manualRunning: WorktreeRow = {
+        let claude = record(36136, "claude", 154 << 20)
+        let session = ProcessGroup(
+            kind: .agentSession, title: "Claude Code · CLI, 2 MCP servers", leader: claude,
+            members: [record(36140, "node", 120 << 20), record(36141, "uv", 107 << 20)])
+        let tmux = ProcessGroup(kind: .shell, title: "zsh", leader: record(4100, "zsh", 3 << 20), members: [record(4101, "tmux", 2 << 20)])
+        return worktree(
+            "dashboard", "/Users/me/Development/dashboard-worktrees/PYMEP-3330-overdraft-drawer-agreement-caratula",
+            branch: "feat/PYMEP-3330", review: .init(state: .open, number: 8200),
+            status: .init(upstream: "origin/feat/PYMEP-3330"), groups: [session, tmux],
+            size: .init(apparentBytes: 3_100_000_000, privateBytes: 300_000_000, computedAt: .now),
+            eligibility: .manual(needsStopping: true))
+    }()
+
+    private static func record(_ pid: Int32, _ name: String, _ bytes: UInt64) -> ProcessRecord {
+        ProcessRecord(
+            pid: pid, ppid: 1, name: name, executablePath: nil, arguments: [], cwd: nil, footprintBytes: bytes,
+            startDate: Date(timeIntervalSinceNow: -1_500), listeningPorts: [])
     }
 
     static let projects: [ProjectRow] = [

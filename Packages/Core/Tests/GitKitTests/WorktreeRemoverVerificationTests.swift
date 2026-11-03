@@ -121,7 +121,8 @@ extension WorktreeRemoverTests {
             let scene = try await sandbox.makeRemovalScene()
             let main = try #require(try await GitReader(runner: sandbox.runner).worktrees(repo: scene.repo).first)
             let calledLinked = Worktree(path: main.path, head: main.head, branch: main.branch, isMain: false)
-            let request = RemovalRequest(repo: scene.repo, worktree: calledLinked, deleteBranch: true, stopGroups: [])
+            let request = RemovalRequest(
+                repo: scene.repo, worktree: calledLinked, deleteBranch: true, stopGroups: [], confirmedAs: .ready)
             let runner = WatchedRunner(wrapping: sandbox.runner)
 
             let error = await #expect(throws: RemovalError.self) {

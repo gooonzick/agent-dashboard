@@ -1,5 +1,6 @@
 import CoreModels
 import Foundation
+import GitKit
 import Safety
 
 /// One chip of the State column.
@@ -116,6 +117,38 @@ public enum RowPresenter {
         else { return nil }
         return "Most of this folder is shared with other files (APFS clones), so removing it frees only "
             + SizeFormat.disk(s.privateBytes) + "."
+    }
+
+    // MARK: Removal
+
+    /// Why a worktree was not removed, or not all the way, in a sentence. What git said, and what the remover found in
+    /// the folder, is passed on as it is.
+    public static func failureReason(_ error: RemovalError) -> String {
+        switch error {
+        // A fetch that fails makes the recheck answer this (Ruling 43).
+        case .stateChanged(.blocked([.cantVerify])):
+            "Could not reach the remote to confirm everything is pushed."
+        case .stateChanged:
+            "Something changed since you looked, so it was left alone."
+        case .worktreeChanged:
+            "The worktree changed since you looked, so it was left alone."
+        case .processStillRunning(let pid):
+            "A process (pid \(pid)) is still running, so it was left alone."
+        case .branchNotDeleted(let message):
+            "The folder is gone, but the branch was kept: " + message
+        // A removal that was given up reaches the window as this too, with a sentence of the store's.
+        case .gitRefused(let message), .hiddenWork(let message):
+            message
+        }
+    }
+
+    /// `<worktree name>: <reason>` for every outcome that failed, in order. `rows` are those that were to be removed.
+    public static func failureLines(_ outcomes: [RemovalOutcome], rows: [WorktreeRow]) -> [String] {
+        outcomes.compactMap { outcome in
+            guard case .failed(let id, let error) = outcome else { return nil }
+            let name = rows.first { $0.id == id }?.displayName ?? (id as NSString).lastPathComponent
+            return name + ": " + failureReason(error)
+        }
     }
 }
 

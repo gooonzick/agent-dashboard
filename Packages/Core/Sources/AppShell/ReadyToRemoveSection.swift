@@ -5,10 +5,12 @@ import SwiftUI
 
 /// The block above the table: the worktrees that are ready to go, and what removing them frees.
 ///
-/// The buttons are in place and do nothing yet; the sheet that they open comes with the removal.
+/// `Remove N…` and `Stop and remove…` always open the sheet. The per-row `Remove` skips it when the user has said
+/// "Don't ask again" (`RowActions.remove` decides).
 struct ReadyToRemoveSection: View {
     let rows: [WorktreeRow]
     @Binding var selection: String?
+    let actions: RowActions
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,9 +19,10 @@ struct ReadyToRemoveSection: View {
                 .padding(.vertical, 10)
             Divider()
             ForEach(rows) { row in
-                ReadyRow(row: row, isSelected: selection == row.id)
+                ReadyRow(row: row, isSelected: selection == row.id, actions: actions)
                     .contentShape(.rect)
                     .onTapGesture { selection = row.id }
+                    .contextMenu { RowContextMenu(row: row, actions: actions) }
                     .accessibilityAddTraits(selection == row.id ? [.isButton, .isSelected] : .isButton)
                 if row.id != rows.last?.id { Divider().padding(.leading, 38) }
             }
@@ -36,10 +39,9 @@ struct ReadyToRemoveSection: View {
                 Text(hint).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            // Task 14 wires the three buttons of this block to the removal sheet; until then they do nothing and are off.
-            Button("Remove \(rows.count)…") {}
+            Button("Remove \(rows.count)…") { actions.remove(rows, false) }
                 .buttonStyle(.borderedProminent)
-                .disabled(true)
+                .disabled(rows.isEmpty || !rows.allSatisfy(actions.canRemove))
         }
     }
 
@@ -54,6 +56,7 @@ struct ReadyToRemoveSection: View {
 private struct ReadyRow: View {
     let row: WorktreeRow
     let isSelected: Bool
+    let actions: RowActions
 
     var body: some View {
         HStack(spacing: 10) {
@@ -70,8 +73,14 @@ private struct ReadyRow: View {
             }
             Text(row.size.realSizeText).monospacedDigit().foregroundStyle(.secondary)
                 .frame(minWidth: 70, alignment: .trailing)
-            Button(needsStopping ? "Stop and remove…" : "Remove") {}  // Task 14; see the header of the block.
-                .disabled(true)
+            Group {
+                if needsStopping {
+                    Button("Stop and remove…") { actions.remove([row], false) }
+                } else {
+                    Button("Remove") { actions.remove([row], true) }
+                }
+            }
+            .disabled(!actions.canRemove(row))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

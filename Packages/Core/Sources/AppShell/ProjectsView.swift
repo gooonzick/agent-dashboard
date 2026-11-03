@@ -9,11 +9,12 @@ struct ProjectsView: View {
     @Binding var filter: ProjectFilter
     @Binding var selection: String?
     @Binding var collapsed: Set<String>
+    let actions: RowActions
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !ready.isEmpty {
-                ReadyToRemoveSection(rows: ready, selection: $selection)
+                ReadyToRemoveSection(rows: ready, selection: $selection, actions: actions)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
@@ -29,7 +30,7 @@ struct ProjectsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, ready.isEmpty ? 12 : 0)
-            ProjectsTable(projects: projects, selection: $selection, collapsed: $collapsed)
+            ProjectsTable(projects: projects, selection: $selection, collapsed: $collapsed, actions: actions)
         }
     }
 }
