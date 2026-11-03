@@ -144,7 +144,7 @@ extension WorktreeRemoverTests {
 
             #expect(error == .processStillRunning(20))  // the child is stopped first, so it is the first one named
             #expect(rechecks.all.isEmpty)
-            #expect(scene.runner.calls.isEmpty)
+            #expect(scene.runner.calls.map(\.subcommand) == readsBeforeStopping)  // and nothing after the stop
         }
 
         // MARK: Who is signalled
@@ -223,6 +223,77 @@ extension WorktreeRemoverTests {
 
             #expect(sampler.sampleCount == 0)
             #expect(signaler.sent.isEmpty)
+        }
+
+        // MARK: Refusals that need no stop (Ruling 71)
+
+        @Test func stopsNothingWhenTheFetchFails() async throws {
+            // Offline: what is on the remote is not known, and the recheck would refuse once the processes are gone.
+            let scene = try PretendScene(answer: { args in
+                WatchedRunner.subcommand(of: args).first == "fetch"
+                    ? CommandResult(exitCode: 128, stdout: "", stderr: "fatal: unable to access the remote") : nil
+            })
+            let process = processRecord(10)
+            let signaler = ScriptedSignaler(alive: [10])
+            let sampler = ScriptedSampler(always: [process])
+            let remover = WorktreeRemover(runner: scene.runner, signaler: signaler, sampler: sampler)
+
+            await #expect(throws: RemovalError.stateChanged(.blocked([.cantVerify]))) {
+                try await remover.remove(scene.request(stopping: [processGroup(process)]), recheck: stillReady)
+            }
+
+            #expect(signaler.sent.isEmpty && sampler.sampleCount == 0)
+            #expect(scene.runner.writes.isEmpty)
+        }
+
+        @Test func stopsNothingWhenTheFolderHoldsHiddenWork() async throws {
+            let scene = try PretendScene(tracked: "h notes.txt\0")
+            let process = processRecord(10)
+            let signaler = ScriptedSignaler(alive: [10])
+            let sampler = ScriptedSampler(always: [process])
+            let remover = WorktreeRemover(runner: scene.runner, signaler: signaler, sampler: sampler)
+
+            let error = await #expect(throws: RemovalError.self) {
+                try await remover.remove(scene.request(stopping: [processGroup(process)]), recheck: stillReady)
+            }
+
+            guard case .hiddenWork? = error else {
+                Issue.record("expected RemovalError.hiddenWork, got \(String(describing: error))")
+                return
+            }
+            #expect(signaler.sent.isEmpty && sampler.sampleCount == 0)
+        }
+
+        @Test func stopsNothingForAWorktreeThatIsNotTheOneThatWasAskedFor() async throws {
+            let scene = try PretendScene(listed: {
+                Worktree(path: $0.path, head: String(repeating: "b", count: 40), branch: $0.branch, lock: $0.lock)
+            })
+            let process = processRecord(10)
+            let signaler = ScriptedSignaler(alive: [10])
+            let remover = WorktreeRemover(
+                runner: scene.runner, signaler: signaler, sampler: ScriptedSampler(always: [process]))
+
+            await #expect(throws: RemovalError.worktreeChanged) {
+                try await remover.remove(scene.request(stopping: [processGroup(process)]), recheck: stillReady)
+            }
+
+            #expect(signaler.sent.isEmpty)
+        }
+
+        @Test func readsBeforeItStopsAndReadsAgainAfter() async throws {
+            let process = processRecord(10)
+            let signaler = ScriptedSignaler(alive: [10])
+
+            try await remove(
+                stopping: [processGroup(process)], with: signaler, seeing: ScriptedSampler(always: [process]))
+
+            #expect(
+                scene.runner.calls.map(\.subcommand).map { $0.prefix(2) } == [
+                    ["fetch", "--prune"], ["worktree", "list"], ["ls-files", "-v"],  // before the stop
+                    ["worktree", "list"], ["ls-files", "-v"],  // after it and the recheck
+                    ["worktree", "remove"],
+                ])
+            #expect(signaler.signals == [[10, SIGTERM]])
         }
 
         // MARK: Helpers
@@ -370,8 +441,12 @@ extension WorktreeRemoverTests {
                     return .ready(needsStopping: false)
                 })
 
-            // The owner of the lock has been told to stop and has, nothing has been run yet, and it is asked just once.
-            #expect(seen.all == [Seen(signals: [[4242, SIGTERM]], gitCommands: 0, ownerAlive: false)])
+            // The owner of the lock has been told to stop and has, nothing has been run yet but the reads before the
+            // stop, and it is asked just once.
+            #expect(
+                seen.all == [
+                    Seen(signals: [[4242, SIGTERM]], gitCommands: readsBeforeStopping.count, ownerAlive: false)
+                ])
             #expect(
                 runner.writes == [
                     ["worktree", "unlock", "--", scene.worktree.path],
@@ -393,7 +468,7 @@ extension WorktreeRemoverTests {
             }
 
             #expect(!signaler.isAlive(4242))
-            #expect(scene.runner.calls.isEmpty)
+            #expect(scene.runner.calls.map(\.subcommand) == readsBeforeStopping)  // and nothing after the recheck
         }
 
         // MARK: Helpers
@@ -408,3 +483,7 @@ extension WorktreeRemoverTests {
         }
     }
 }
+
+/// What the remover asks git before it stops anything (Ruling 71): the fetch, the list of the worktrees and the files
+/// that git is told not to look at. None of it changes anything.
+let readsBeforeStopping: [[String]] = [["fetch", "--prune"], ["worktree", "list", "--porcelain"], ["ls-files", "-v", "-z"]]

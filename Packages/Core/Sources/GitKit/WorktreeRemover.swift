@@ -46,7 +46,8 @@ public enum RemovalError: Error, Equatable {
     /// request for either is answered at once, with `.mainWorktree` or `.missing`, and so is one whose folder turns out
     /// to be gone when the removal looks at it again. Or the recheck, which looks at its state once more after the
     /// processes are stopped, did not answer `.ready`, or `.manual` for a request that was confirmed as manual, with
-    /// nothing left to stop. Nothing was changed.
+    /// nothing left to stop. Or the fetch before anything was stopped failed, which is `.blocked([.cantVerify])`, as
+    /// the recheck says of a fetch that fails: what is on the remote is not known. Nothing was changed.
     case stateChanged(RemovalEligibility)
     /// Git refused, or failed, to do what it was asked: list the worktrees, unlock or remove the worktree, or prune.
     /// What it said, for people to read. The worktree is as it was, unless git failed halfway through deleting its
@@ -78,6 +79,11 @@ public enum RemovalError: Error, Equatable {
 public protocol WorktreeRemoving: Sendable {
     /// Removes the worktree of `request`. Each of these steps that fails ends the removal there.
     ///
+    /// 0. If there is a process to stop, what can refuse the removal without stopping anything is asked first: `git
+    ///    fetch --prune` (a fetch that fails is `stateChanged(.blocked([.cantVerify]))`), then steps 3 and 4. A process
+    ///    that is stopped cannot be started again, and one stopped for a removal that git or the folder refuses
+    ///    anyway is lost for nothing. Steps 3 and 4 are still taken after step 2: the worktree may change while its
+    ///    processes stop.
     /// 1. The processes of `request.stopGroups` are stopped.
     /// 2. `recheck` is called, just once, and must read the state of the worktree anew. It has to be at least what
     ///    the user confirmed (`request.confirmedAs`): `.ready` with nothing running goes on whatever was confirmed, and
@@ -156,6 +162,7 @@ public struct WorktreeRemover: WorktreeRemoving {
         guard !request.worktree.isMain else { throw RemovalError.stateChanged(.mainWorktree) }
         guard !request.worktree.isPrunable else { throw RemovalError.stateChanged(.missing) }
 
+        if !Self.stopOrder(of: request.stopGroups).isEmpty { try await refuseBeforeStopping(request) }
         try await stop(request.stopGroups)
 
         // Once the processes are stopped nothing is left to stop. A recheck that still sees something run, or run
@@ -183,6 +190,22 @@ public struct WorktreeRemover: WorktreeRemoving {
     }
 
     // MARK: Deleting
+
+    /// Step 0 of `remove`: everything that may refuse the removal and changes nothing, read before a process is
+    /// stopped for it. The lock is left to step 5, after the stop: its owner may be one of the processes to stop.
+    private func refuseBeforeStopping(_ request: RemovalRequest) async throws {
+        do {
+            try await GitReader(runner: runner).fetchPrune(repo: request.repo)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw RemovalError.stateChanged(.blocked([.cantVerify]))
+        }
+        try Task.checkCancellation()
+        let listing = try await currentWorktrees(of: request.repo)
+        try Self.verify(request.worktree, in: listing)
+        try await refuseHiddenWork(in: request.worktree, among: listing)
+    }
 
     /// Steps 3 to 7 of `remove`.
     private func delete(_ request: RemovalRequest) async throws {
