@@ -145,6 +145,29 @@ import Testing
         #expect(scene.sampler.samples == paused)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func samplesEveryFifteenSecondsWhileAnotherAppIsInFront() async throws {
+        let scene = try Scene()
+        scene.addRepository("/x/repo")
+        let store = await scene.startedStore()
+        store.isAppActive = false
+
+        store.isWindowVisible = true
+        #expect(await poll { scene.sampler.samples == 1 && scene.clock.sleepers == 1 })
+        await scene.clock.advance(by: .seconds(10))
+        try await Task.sleep(for: .milliseconds(50))  // time for a sample that should not be taken
+        #expect(scene.sampler.samples == 1)
+        await scene.clock.advance(by: .seconds(5))
+        #expect(await poll { scene.sampler.samples == 2 && scene.clock.sleepers == 1 })
+
+        // Back in front: a sample at once, and every 3 seconds again.
+        store.isAppActive = true
+        #expect(await poll { scene.sampler.samples == 3 && scene.clock.sleepers == 1 })
+        await scene.clock.advance(by: .seconds(3))
+        #expect(await poll { scene.sampler.samples == 4 })
+        store.isWindowVisible = false
+    }
+
     @Test func removeRechecksAndReportsStateChange() async throws {
         let scene = try Scene()
         let worktree = linked("/x/wt", branch: "feature")

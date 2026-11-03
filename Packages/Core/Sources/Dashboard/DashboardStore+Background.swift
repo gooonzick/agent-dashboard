@@ -26,6 +26,9 @@ extension DashboardStore {
     static let sizeSaveInterval: TimeInterval = 30
     static let watchLatency: Duration = .seconds(2)
     static let pollInterval: Duration = .seconds(3)
+    /// How often the processes are sampled while the window is on the screen but another app is in front: nobody
+    /// watches the table closely then, and a sample reads every process of the user, a thousand of them on a busy Mac.
+    static let backgroundPollInterval: Duration = .seconds(15)
 
     // MARK: Processes
 
@@ -33,16 +36,16 @@ extension DashboardStore {
         pollTask?.cancel()
         pollTask = nil
         guard isWindowVisible, didOnboard else { return }
-        let sleep = env.sleep
+        let (sleep, interval) = (env.sleep, isAppActive ? Self.pollInterval : Self.backgroundPollInterval)
         pollTask = Task(priority: .utility) { [weak self] in
             while !Task.isCancelled {
                 guard await self?.tick() != nil else { return }
-                do { try await sleep(Self.pollInterval) } catch { return }
+                do { try await sleep(interval) } catch { return }
             }
         }
     }
 
-    /// What is done every 3 seconds while the window is visible.
+    /// What is done every 3 seconds while the window is visible, or every 15 while another app is in front.
     private func tick() async {
         await sampleProcesses()
         flushStaleSizes()

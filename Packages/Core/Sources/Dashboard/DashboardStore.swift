@@ -59,6 +59,11 @@ struct Repository {
     public var isWindowVisible = false {
         didSet { if isWindowVisible != oldValue { visibilityChanged() } }
     }
+    /// Whether the app is the one in front. While another app is, a window on the screen has its processes sampled
+    /// every 15 seconds rather than every 3. Coming to the front samples at once.
+    public var isAppActive = true {
+        didSet { if isAppActive != oldValue { visibilityChanged() } }
+    }
 
     /// What the user has set: the window reads and writes "Don't ask again for merged, pushed worktrees" here.
     public var settings: SettingsStore { env.settings }
@@ -357,7 +362,11 @@ struct Repository {
 
     /// Asks for a sample of the processes, and shows what runs where.
     func sampleProcesses() async {
-        groups = await ProcessGroups.sample(env.sampler, roots: worktreeRoots)
+        let sampled = await ProcessGroups.sample(env.sampler, roots: worktreeRoots)
+        // Most samples find what the last one found. Publishing anyway would build every row again and have the table
+        // drawn again for nothing, every 3 seconds.
+        guard sampled != groups else { return }
+        groups = sampled
         publish()
     }
 

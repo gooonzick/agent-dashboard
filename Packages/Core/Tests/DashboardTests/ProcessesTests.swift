@@ -1,6 +1,7 @@
 import CoreModels
 @testable import Dashboard
 import Foundation
+import Synchronization
 import Testing
 
 @MainActor
@@ -38,5 +39,25 @@ import Testing
         #expect(await poll { store.readyToRemove.map(\.eligibility) == [.ready(needsStopping: true)] })
         #expect(store.row(worktree.path)?.groups.first?.kind == .agentSession)
         store.isWindowVisible = false
+    }
+
+    @Test func aSampleThatFindsWhatTheLastOneFoundChangesNoRow() async throws {
+        let scene = try Scene()
+        let worktree = linked("/x/wt", branch: "feature")
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.sampler.set([process(600, name: "node", cwd: worktree.path)])
+        let store = await scene.startedStore()
+        await store.sampleProcesses()
+        #expect(store.row(worktree.path)?.groups.map(\.leader.pid) == [600])
+
+        let changed = Mutex(false)
+        withObservationTracking { _ = store.projects } onChange: { changed.withLock { $0 = true } }
+        await store.sampleProcesses()
+        #expect(!changed.withLock { $0 })
+
+        scene.sampler.set([process(600, name: "node", cwd: worktree.path), process(601, name: "vite", cwd: worktree.path)])
+        await store.sampleProcesses()
+        #expect(changed.withLock { $0 })
+        #expect(store.row(worktree.path)?.groups.count ?? 0 >= 1)
     }
 }

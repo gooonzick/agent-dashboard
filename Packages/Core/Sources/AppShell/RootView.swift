@@ -24,6 +24,13 @@ public struct RootView: View {
             }
         }
         .background(WindowVisibility { store.isWindowVisible = $0 })
+        .onAppear { store.isAppActive = NSApplication.shared.isActive }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.isAppActive = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            store.isAppActive = false
+        }
     }
 
     private var main: some View {
