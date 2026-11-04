@@ -14,12 +14,22 @@ struct RowActions {
     /// Forgets the worktrees of the row's repository whose folders are gone.
     var prune: @MainActor (_ row: WorktreeRow) -> Void = { _ in }
     var hide: @MainActor (_ repoPath: String) -> Void = { _ in }
+    /// The groups whose stop is under way, by the pid of their leader (`DashboardStore.stopping`).
+    var stopping: Set<Int32> = []
+    /// Asks to stop `groups`, which run in the worktree of `row`: always the dialog first.
+    var stop: @MainActor (_ groups: [ProcessGroup], _ row: WorktreeRow) -> Void = { _, _ in }
 
     static var inert: RowActions { RowActions() }
 
     /// Whether `row` may be offered for removal now: it is `.ready` or `.manual`, and not already on its way.
     func canRemove(_ row: WorktreeRow) -> Bool {
         row.isRemovable && !removing.contains(row.id)
+    }
+
+    /// Whether `group`, which runs in the worktree of `row`, may be offered a stop now: it is not being stopped, and
+    /// the worktree is not being removed, which stops it anyway.
+    func canStop(_ group: ProcessGroup, of row: WorktreeRow) -> Bool {
+        !stopping.contains(group.id) && !removing.contains(row.id)
     }
 }
 
@@ -34,6 +44,11 @@ struct RowContextMenu: View {
         } else {
             Button("Remove…") { actions.remove([row], false) }
                 .disabled(!actions.canRemove(row))
+        }
+        // The main worktree too: what runs in it is the user's to stop, though the worktree is never removed.
+        if !row.groups.isEmpty {
+            Button("Stop Processes…") { actions.stop(row.groups, row) }
+                .disabled(!row.groups.contains { actions.canStop($0, of: row) })
         }
         Divider()
         Button("Reveal in Finder") { WorktreeOpener.revealInFinder(row) }

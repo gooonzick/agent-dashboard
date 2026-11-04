@@ -36,7 +36,7 @@ public struct RootView: View {
     private var main: some View {
         MainView(
             projects: store.projects, ready: store.readyToRemove, scanState: store.scanState,
-            lastUpdated: store.lastUpdated, isBusy: working || store.isStarting,
+            lastUpdated: store.lastUpdated, isBusy: working || store.isStarting, stopping: store.stopping,
             fetch: { run { await store.fetchAll() } },
             refreshSizes: { store.refreshSizes(of: $0) },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
@@ -51,6 +51,7 @@ public struct RootView: View {
                     return RowPresenter.failureLines([.failed(row.id, error)], rows: [row])
                 },
                 hide: { store.hide(repoPath: $0) },
+                stop: { groups, row in await store.stop(groups, of: row) },
                 skipsConfirmation: { store.settings.skipConfirmForMergedPushed },
                 skipConfirmationFromNowOn: { store.settings.skipConfirmForMergedPushed = true }),
             disk: nil, readsDisk: true
@@ -70,12 +71,14 @@ public struct RootView: View {
     }
 }
 
-/// What the window asks of the store to remove, prune and hide, and the setting that lets a removal skip the sheet.
-/// Removing and pruning answer with a line for each worktree that was not removed (`RowPresenter.failureLines`).
+/// What the window asks of the store to remove, prune and hide, and to stop processes, and the setting that lets a
+/// removal skip the sheet. Removing and pruning answer with a line for each worktree that was not removed
+/// (`RowPresenter.failureLines`), stopping with what went wrong, if something did.
 struct RemovalActions {
     var remove: @MainActor (_ rows: [WorktreeRow], _ deleteBranches: Bool) async -> [String]
     var prune: @MainActor (_ row: WorktreeRow) async -> [String]
     var hide: @MainActor (_ repoPath: String) -> Void
+    var stop: @MainActor (_ groups: [ProcessGroup], _ row: WorktreeRow) async -> StopFailure?
     /// "Don't ask again for merged, pushed worktrees".
     var skipsConfirmation: @MainActor () -> Bool
     var skipConfirmationFromNowOn: @MainActor () -> Void
@@ -83,8 +86,8 @@ struct RemovalActions {
     /// Removes nothing: for the renders.
     static var inert: RemovalActions {
         RemovalActions(
-            remove: { _, _ in [] }, prune: { _ in [] }, hide: { _ in }, skipsConfirmation: { false },
-            skipConfirmationFromNowOn: {})
+            remove: { _, _ in [] }, prune: { _ in [] }, hide: { _ in }, stop: { _, _ in nil },
+            skipsConfirmation: { false }, skipConfirmationFromNowOn: {})
     }
 }
 
@@ -102,6 +105,8 @@ struct MainView: View {
     let scanState: ScanState
     let lastUpdated: Date?
     let isBusy: Bool
+    /// The groups whose stop is under way (`DashboardStore.stopping`).
+    let stopping: Set<Int32>
     let fetch: () -> Void
     /// Measures the worktrees at these paths again if their sizes are more than a minute old: the one that the
     /// inspector shows, and those of the sheet (`DashboardStore.refreshSizes(of:)`).
@@ -124,11 +129,15 @@ struct MainView: View {
     @State private var removing: Set<String> = []
     /// A line for each worktree that was not removed, for the alert.
     @State private var failures: [String] = []
+    /// A stop that waits for the user to confirm it.
+    @State private var stopAsk: StopConfirmation?
+    /// What the last stop that did not go through left running, for its alert.
+    @State private var stopFailure: String?
     @FocusState private var searchIsFocused: Bool
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
-        fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
+        stopping: Set<Int32> = [], fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
         refresh: @escaping () -> Void, removal: RemovalActions,
         sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
         readsDisk: Bool
@@ -138,6 +147,7 @@ struct MainView: View {
         self.scanState = scanState
         self.lastUpdated = lastUpdated
         self.isBusy = isBusy
+        self.stopping = stopping
         self.fetch = fetch
         self.refreshSizes = refreshSizes
         self.refresh = refresh
@@ -191,6 +201,23 @@ struct MainView: View {
         ) {
         } message: {
             Text(failures.joined(separator: "\n"))
+        }
+        // Always asked: what is stopped may hold work that is saved nowhere, and nothing brings it back.
+        .confirmationDialog(
+            stopAsk?.title ?? "", isPresented: Binding(get: { stopAsk != nil }, set: { if !$0 { stopAsk = nil } }),
+            titleVisibility: .visible, presenting: stopAsk
+        ) { ask in
+            Button(ask.confirmTitle, role: .destructive) { performStop(ask) }
+            Button("Cancel", role: .cancel) {}
+        } message: { ask in
+            Text(ask.message)
+        }
+        .alert(
+            RowPresenter.stopFailureTitle,
+            isPresented: Binding(get: { stopFailure != nil }, set: { if !$0 { stopFailure = nil } })
+        ) {
+        } message: {
+            Text(stopFailure ?? "")
         }
         .onChange(of: projects) { _, projects in
             if case .repository(let path) = sidebar, !projects.contains(where: { $0.path == path }) {
@@ -259,7 +286,7 @@ struct MainView: View {
             prune: { row in
                 Task { failures += await removal.prune(row) }
             },
-            hide: { removal.hide($0) })
+            hide: { removal.hide($0) }, stopping: stopping, stop: { groups, row in requestStop(groups, of: row) })
     }
 
     /// The sheet for `rows`, or the removal at once for the per-row Remove when "Don't ask again" lets it skip the
@@ -287,6 +314,25 @@ struct MainView: View {
             let lines = await removal.remove(rows, deleteBranches)
             removing.subtract(ids)
             failures += lines
+        }
+    }
+
+    // MARK: Stopping
+
+    /// The dialog for `groups`, without those that cannot be stopped now: on their way already, or in a worktree that
+    /// is being removed.
+    private func requestStop(_ groups: [ProcessGroup], of row: WorktreeRow) {
+        let actions = rowActions
+        let groups = groups.filter { actions.canStop($0, of: row) }
+        guard !groups.isEmpty else { return }
+        stopAsk = StopConfirmation(groups, of: row)
+    }
+
+    private func performStop(_ ask: StopConfirmation) {
+        stopAsk = nil
+        Task {
+            guard let failure = await removal.stop(ask.groups, ask.row) else { return }
+            stopFailure = RowPresenter.stopFailureMessage(failure, groups: ask.groups)
         }
     }
 

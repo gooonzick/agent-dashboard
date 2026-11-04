@@ -91,6 +91,13 @@ struct WorktreeInspector: View {
 
     private var runningSection: some View {
         InspectorSection("Running", trailing: RowPresenter.memory(of: row.groups)) {
+            if row.groups.count > 1 {
+                Button("Stop All") { actions.stop(row.groups, row) }
+                    .buttonStyle(.borderless)
+                    .font(.subheadline)
+                    .disabled(!row.groups.contains { actions.canStop($0, of: row) })
+            }
+        } content: {
             ForEach(row.groups) { group in
                 HStack(spacing: 8) {
                     Image(systemName: group.kind == .agentSession ? "sparkle" : "circle.fill")
@@ -100,12 +107,31 @@ struct WorktreeInspector: View {
                     Text(group.title).lineLimit(1)
                     Spacer(minLength: 8)
                     Text(SizeFormat.memory(group.totalFootprint)).monospacedDigit().foregroundStyle(.secondary)
+                    stopButton(group)
                 }
                 .font(.callout)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
         }
+    }
+
+    /// The Stop of one group, and a spinner in its place while the group is being stopped. Both take the width of the
+    /// icon, so that the memory beside them does not move.
+    private func stopButton(_ group: ProcessGroup) -> some View {
+        Group {
+            if actions.stopping.contains(group.id) {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Stop", systemImage: "stop.circle") { actions.stop([group], row) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help(RowPresenter.stopLabel(group))
+                    .accessibilityLabel(RowPresenter.stopLabel(group))
+                    .disabled(!actions.canStop(group, of: row))
+            }
+        }
+        .frame(width: 16, height: 16)
     }
 
     private func diskSection(_ size: SizeInfo) -> some View {
@@ -136,19 +162,23 @@ struct WorktreeInspector: View {
     }
 }
 
-/// A titled group: a rounded box on an opaque fill, its rows split by separators that run the width of the box.
-private struct InspectorSection<Content: View>: View {
+/// A titled group: a rounded box on an opaque fill, its rows split by separators that run the width of the box. What
+/// `accessory` holds, a button that acts on the whole group, stands at the end of the title line.
+private struct InspectorSection<Content: View, Accessory: View>: View {
     let title: String
     var trailing: String?
     var separated = true
+    @ViewBuilder let accessory: Accessory
     @ViewBuilder let content: Content
 
     init(
-        _ title: String, trailing: String? = nil, separated: Bool = true, @ViewBuilder content: () -> Content
+        _ title: String, trailing: String? = nil, separated: Bool = true, @ViewBuilder accessory: () -> Accessory,
+        @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.trailing = trailing
         self.separated = separated
+        self.accessory = accessory()
         self.content = content()
     }
 
@@ -158,6 +188,7 @@ private struct InspectorSection<Content: View>: View {
                 Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if let trailing { Text(trailing).font(.subheadline).monospacedDigit().foregroundStyle(.secondary) }
+                accessory
             }
             .padding(.horizontal, 2)
             VStack(alignment: .leading, spacing: 0) {
@@ -176,6 +207,14 @@ private struct InspectorSection<Content: View>: View {
             .background(.background.secondary, in: .rect(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.separator) }
         }
+    }
+}
+
+extension InspectorSection where Accessory == EmptyView {
+    init(
+        _ title: String, trailing: String? = nil, separated: Bool = true, @ViewBuilder content: () -> Content
+    ) {
+        self.init(title, trailing: trailing, separated: separated, accessory: { EmptyView() }, content: content)
     }
 }
 
