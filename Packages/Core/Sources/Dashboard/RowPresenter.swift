@@ -157,6 +157,33 @@ public enum RowPresenter {
             return name + ": " + failureReason(error)
         }
     }
+
+    // MARK: Stopping
+
+    /// `name · pid N`: a process as the dialogs name it, by the name that the kernel has for it.
+    public static func processLine(_ process: ProcessRecord) -> String {
+        "\(process.name) · pid \(process.pid)"
+    }
+
+    /// What the Stop button of a group says to VoiceOver, and in its tooltip: `Stop Claude Code · CLI`.
+    public static func stopLabel(_ group: ProcessGroup) -> String {
+        "Stop \(group.title)"
+    }
+
+    /// The title of the alert that says a stop did not go through.
+    public static let stopFailureTitle = "Some processes are still running"
+
+    /// What that alert says: the process that did not die, by name if one of `groups` had it, or why nothing was
+    /// stopped.
+    public static func stopFailureMessage(_ failure: StopFailure, groups: [ProcessGroup]) -> String {
+        switch failure {
+        case .stillRunning(let pid):
+            let process = groups.lazy.flatMap { [$0.leader] + $0.members }.first { $0.pid == pid }
+            return process.map(processLine) ?? "pid \(pid)"
+        case .removalUnderWay:
+            return "The worktree is being removed, which stops them."
+        }
+    }
 }
 
 /// The rows of the Ready to remove block that are on screen. Past `collapsedLimit` rows the block shows the first few and

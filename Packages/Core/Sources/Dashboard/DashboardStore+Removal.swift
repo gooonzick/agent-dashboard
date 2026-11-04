@@ -17,6 +17,10 @@ extension DashboardStore {
     /// folder is gone never has its branch deleted: it is only pruned (`prune`).
     public func remove(_ rows: [WorktreeRow], deleteBranches: Bool) async -> [RemovalOutcome] {
         var outcomes: [RemovalOutcome] = []
+        // A row that waits for its turn is on its way already: the user confirmed it with the others.
+        let ids = Set(rows.map(\.id)).subtracting(removingWorktrees)
+        removingWorktrees.formUnion(ids)
+        defer { removingWorktrees.subtract(ids) }
         for row in rows {
             let error = await removeOne(row, deleteBranch: deleteBranches && !row.worktree.isPrunable)
             outcomes.append(error.map { .failed(row.id, $0) } ?? .removed(row.id))

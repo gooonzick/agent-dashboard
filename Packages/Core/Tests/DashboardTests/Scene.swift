@@ -64,6 +64,8 @@ final class Scene {
         self.reviews = reviews
         self.hosting = hosting
         self.signaler = signaler
+        // A process that ends leaves the samples, as it does on the Mac.
+        signaler.onExit { [sampler] in sampler.remove($0) }
         folder = try TempDir(named: "Dashboard")
         cache = DashboardCache(url: folder.url.appending(path: "cache.json"))
         settings = SettingsStore(defaults: try testDefaults(in: folder))

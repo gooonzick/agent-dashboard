@@ -49,6 +49,9 @@ struct Repository {
     /// Whether `start()` is running, from the first line of it to the last: a second `start()` in that time does
     /// nothing, so the window waits for this to be `false` before it offers one.
     public private(set) var isStarting = false
+    /// The processes that are being stopped (`stop(_:of:)`), by the pid of the leader of their group: the window
+    /// offers no second stop for them, and shows that it is under way.
+    public internal(set) var stopping: Set<Int32> = []
     /// Whether the user has been through the first-run window. Until then the store reads nothing, samples nothing and
     /// asks no host: `start()`, `refresh()`, `fetchAll()` and `refreshReviews(host:)` do nothing, and the processes are
     /// not sampled. `completeOnboarding()` ends it.
@@ -105,6 +108,9 @@ struct Repository {
     /// What the watcher added and removed while a scan was under way: the scan's answer may be older.
     @ObservationIgnored var changesDuringScan: RepositoryChanges?
     @ObservationIgnored var removalLocks: [String: Limiter] = [:]
+    /// The worktrees, by path, that `remove(_:deleteBranches:)` is removing or has yet to remove in a call that is
+    /// under way: nothing of theirs is stopped on its own in that time.
+    @ObservationIgnored var removingWorktrees: Set<String> = []
     @ObservationIgnored let cacheWriter: CacheWriter
     @ObservationIgnored var cacheVersion = 0
     @ObservationIgnored var pendingCacheWrites = 0

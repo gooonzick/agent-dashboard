@@ -356,6 +356,7 @@ final class FakeSampler: ProcessSampling {
 
     var samples: Int { state.withLock { $0.samples } }
     func set(_ processes: [ProcessRecord]) { state.withLock { $0.processes = processes } }
+    func remove(_ pid: Int32) { state.withLock { $0.processes.removeAll { $0.pid == pid } } }
 
     func sample() -> [ProcessRecord] {
         state.withLock {
@@ -365,15 +366,45 @@ final class FakeSampler: ProcessSampling {
     }
 }
 
+/// The processes that the test says run. A signal ends the one that it is sent to, unless it is `SIGTERM` to one that
+/// ignores it, and what `onExit` was given is told of every process that ends.
 final class FakeSignaler: ProcessSignaling {
-    private let alive: Mutex<Set<Int32>>
-
-    init(alive: Set<Int32> = []) {
-        self.alive = Mutex(alive)
+    private struct State {
+        var alive: Set<Int32>
+        var signals: [[Int32]] = []
+        var onExit: @Sendable (Int32) -> Void = { _ in }
     }
 
-    func signal(_ pid: Int32, _ sig: Int32) -> Bool { false }
-    func isAlive(_ pid: Int32) -> Bool { alive.withLock { $0.contains(pid) } }
+    private let state: Mutex<State>
+    private let ignoringTerm: Set<Int32>
+
+    init(alive: Set<Int32> = [], ignoringTerm: Set<Int32> = []) {
+        state = Mutex(State(alive: alive))
+        self.ignoringTerm = ignoringTerm
+    }
+
+    /// Who was sent which signal, in order.
+    var signals: [[Int32]] { state.withLock { $0.signals } }
+
+    func onExit(_ onExit: @escaping @Sendable (Int32) -> Void) { state.withLock { $0.onExit = onExit } }
+
+    /// Ends the process `pid`, as though it exited by itself.
+    func exit(_ pid: Int32) {
+        let onExit = state.withLock { $0.alive.remove(pid) == nil ? nil : $0.onExit }
+        onExit?(pid)
+    }
+
+    func signal(_ pid: Int32, _ sig: Int32) -> Bool {
+        let (sent, ends) = state.withLock { state in
+            state.signals.append([pid, sig])
+            let sent = state.alive.contains(pid)
+            return (sent, sent && !(sig == SIGTERM && ignoringTerm.contains(pid)))
+        }
+        if ends { exit(pid) }
+        return sent
+    }
+
+    func isAlive(_ pid: Int32) -> Bool { state.withLock { $0.alive.contains(pid) } }
 }
 
 /// A process for a sample: it runs in `cwd`, and nothing else about it matters.
