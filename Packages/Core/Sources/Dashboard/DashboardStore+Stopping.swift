@@ -25,7 +25,7 @@ extension DashboardStore {
         guard !groups.isEmpty else { return nil }
         let leaders = Set(groups.map(\.id))
         stopping.formUnion(leaders)
-        let stopper = ProcessStopper(signaler: env.signaler, sampler: env.sampler)
+        let stopper = ProcessStopper(signaler: env.signaler, sampler: env.sampler, stopTimeout: env.stopTimeout)
         let failure = await Stopping.stop(groups, with: stopper)
         // The rows lose what is gone before the buttons come back: a button of a group that is gone stops nothing.
         await sampleProcesses()

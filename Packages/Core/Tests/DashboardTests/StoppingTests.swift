@@ -1,6 +1,7 @@
 import CoreModels
 @testable import Dashboard
 import Foundation
+import GitKit
 import ProcessKit
 import Testing
 
@@ -74,5 +75,40 @@ import Testing
         #expect(store.stopping.isEmpty)
         gate.open()
         #expect(await removal.value == [.removed(worktree.path)])
+    }
+
+    @Test func aProcessThatSurvivesTheKillIsReported() async throws {
+        let scene = try Scene(signaler: FakeSignaler(alive: [700], unkillable: [700]))
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.sampler.set([process(700, cwd: worktree.path)])
+        let store = await scene.startedStore()
+        await store.sampleProcesses()
+        let row = try #require(store.row(worktree.path))
+
+        let failure = await store.stop(row.groups, of: row)
+
+        #expect(failure == .stillRunning(700))
+        #expect(scene.signaler.signals == [[700, SIGTERM], [700, SIGKILL]])
+        #expect(store.stopping.isEmpty)
+        #expect(store.row(worktree.path)?.groups.map(\.leader.pid) == [700])
+    }
+
+    @Test func aRemovalThatFailedNoLongerHoldsBackAStop() async throws {
+        let scene = try Scene(signaler: FakeSignaler(alive: [700]))
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.reviews.answer("feature", ReviewInfo(state: .merged, number: 1, headSHA: sha("a")))
+        scene.remover.onRemoval { _ in throw RemovalError.gitRefused("busy") }
+        scene.sampler.set([process(700, cwd: worktree.path)])
+        let store = await scene.startedStore()
+        let ready = try #require(store.row(worktree.path))
+        scene.sampler.set([])  // nothing runs while it is removed
+        let outcomes = await store.remove([ready], deleteBranches: false)
+        #expect(outcomes == [.failed(worktree.path, .gitRefused("busy"))])
+
+        scene.sampler.set([process(700, cwd: worktree.path)])
+        await store.sampleProcesses()
+        let row = try #require(store.row(worktree.path))
+        #expect(await store.stop(row.groups, of: row) == nil)
+        #expect(scene.signaler.signals == [[700, SIGTERM]])
     }
 }

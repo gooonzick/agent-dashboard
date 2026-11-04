@@ -171,7 +171,12 @@ public enum RowPresenter {
     }
 
     /// The title of the alert that says a stop did not go through.
-    public static let stopFailureTitle = "Some processes are still running"
+    public static func stopFailureTitle(_ failure: StopFailure) -> String {
+        switch failure {
+        case .stillRunning: "Some processes are still running"
+        case .removalUnderWay: "The worktree is being removed"
+        }
+    }
 
     /// What that alert says: the process that did not die, by name if one of `groups` had it, or why nothing was
     /// stopped.

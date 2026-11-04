@@ -377,10 +377,13 @@ final class FakeSignaler: ProcessSignaling {
 
     private let state: Mutex<State>
     private let ignoringTerm: Set<Int32>
+    /// Processes that no signal ends: stuck in the kernel.
+    private let unkillable: Set<Int32>
 
-    init(alive: Set<Int32> = [], ignoringTerm: Set<Int32> = []) {
+    init(alive: Set<Int32> = [], ignoringTerm: Set<Int32> = [], unkillable: Set<Int32> = []) {
         state = Mutex(State(alive: alive))
         self.ignoringTerm = ignoringTerm
+        self.unkillable = unkillable
     }
 
     /// Who was sent which signal, in order.
@@ -398,7 +401,7 @@ final class FakeSignaler: ProcessSignaling {
         let (sent, ends) = state.withLock { state in
             state.signals.append([pid, sig])
             let sent = state.alive.contains(pid)
-            return (sent, sent && !(sig == SIGTERM && ignoringTerm.contains(pid)))
+            return (sent, sent && !unkillable.contains(pid) && !(sig == SIGTERM && ignoringTerm.contains(pid)))
         }
         if ends { exit(pid) }
         return sent

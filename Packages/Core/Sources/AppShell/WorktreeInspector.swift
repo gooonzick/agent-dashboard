@@ -121,7 +121,7 @@ struct WorktreeInspector: View {
     private func stopButton(_ group: ProcessGroup) -> some View {
         Group {
             if actions.stopping.contains(group.id) {
-                ProgressView().controlSize(.small)
+                ProgressView().controlSize(.small).accessibilityLabel("Stopping \(group.title)")
             } else {
                 Button("Stop", systemImage: "stop.circle") { actions.stop([group], row) }
                     .labelStyle(.iconOnly)

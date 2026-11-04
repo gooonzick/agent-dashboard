@@ -132,7 +132,7 @@ struct MainView: View {
     /// A stop that waits for the user to confirm it.
     @State private var stopAsk: StopConfirmation?
     /// What the last stop that did not go through left running, for its alert.
-    @State private var stopFailure: String?
+    @State private var stopFailure: (title: String, message: String)?
     @FocusState private var searchIsFocused: Bool
 
     init(
@@ -213,11 +213,11 @@ struct MainView: View {
             Text(ask.message)
         }
         .alert(
-            RowPresenter.stopFailureTitle,
+            stopFailure?.title ?? "",
             isPresented: Binding(get: { stopFailure != nil }, set: { if !$0 { stopFailure = nil } })
         ) {
         } message: {
-            Text(stopFailure ?? "")
+            Text(stopFailure?.message ?? "")
         }
         .onChange(of: projects) { _, projects in
             if case .repository(let path) = sidebar, !projects.contains(where: { $0.path == path }) {
@@ -332,7 +332,9 @@ struct MainView: View {
         stopAsk = nil
         Task {
             guard let failure = await removal.stop(ask.groups, ask.row) else { return }
-            stopFailure = RowPresenter.stopFailureMessage(failure, groups: ask.groups)
+            stopFailure = (
+                RowPresenter.stopFailureTitle(failure), RowPresenter.stopFailureMessage(failure, groups: ask.groups)
+            )
         }
     }
 

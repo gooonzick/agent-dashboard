@@ -66,7 +66,8 @@ import Testing
     }
 
     @Test func theFailureNamesTheProcessThatSurvived() {
-        #expect(RowPresenter.stopFailureTitle == "Some processes are still running")
+        #expect(RowPresenter.stopFailureTitle(.stillRunning(1)) == "Some processes are still running")
+        #expect(RowPresenter.stopFailureTitle(.removalUnderWay) == "The worktree is being removed")
         #expect(
             RowPresenter.stopFailureMessage(.stillRunning(600), groups: [server, session]) == "disclaimer · pid 600")
         // One that none of the groups had is named by its id alone.

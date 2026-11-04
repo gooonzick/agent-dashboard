@@ -25,6 +25,8 @@ public struct DashboardEnvironment: Sendable {
     public var now: @Sendable () -> Date
     /// How the store waits between two samples of the processes.
     public var sleep: @Sendable (Duration) async throws -> Void
+    /// How long a process that was told to stop gets before it is killed (`ProcessStopper`). Tests make it short.
+    public var stopTimeout: Duration = .seconds(5)
 
     public init(
         scanner: any RepoScanning, git: any GitReading, reviews: any ReviewLooking, hosting: any HostingDetecting,

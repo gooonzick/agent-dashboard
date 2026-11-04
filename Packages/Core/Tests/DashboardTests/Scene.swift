@@ -81,11 +81,13 @@ final class Scene {
         -> DashboardEnvironment
     {
         let clock = self.clock
-        return DashboardEnvironment(
+        var env = DashboardEnvironment(
             scanner: scanner, git: git, reviews: reviews ?? self.reviews, hosting: hosting ?? self.hosting,
             sizes: sizes, sampler: sampler, signaler: signaler, remover: remover, watcher: watcher, cache: cache,
             settings: settings, now: { [date] in date.now },
             sleep: { try await clock.sleep(for: $0) })
+        env.stopTimeout = .milliseconds(100)
+        return env
     }
 
     func makeStore(reviews: (any ReviewLooking)? = nil, hosting: (any HostingDetecting)? = nil) -> DashboardStore {
