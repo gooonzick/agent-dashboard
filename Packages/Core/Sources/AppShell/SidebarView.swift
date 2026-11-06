@@ -7,6 +7,7 @@ import SwiftUI
 enum SidebarItem: Hashable {
     case projects
     case readyToRemove
+    case processes
     case repository(String)
 }
 
@@ -40,6 +41,10 @@ struct SidebarView: View {
             Label("Ready to remove", systemImage: "sparkles")
                 .badge(readyCount)
                 .tag(SidebarItem.readyToRemove)
+            // The worktrees that run something, whatever the search says.
+            Label("Processes", systemImage: "waveform.path.ecg")
+                .badge(ProcessesPage(projects: projects).sections.count)
+                .tag(SidebarItem.processes)
             Section("Repositories") {
                 ForEach(projects) { project in
                     Label(project.name, systemImage: "folder")

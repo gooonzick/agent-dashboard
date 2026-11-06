@@ -37,6 +37,7 @@ public struct RootView: View {
         MainView(
             projects: store.projects, ready: store.readyToRemove, scanState: store.scanState,
             lastUpdated: store.lastUpdated, isBusy: working || store.isStarting, stopping: store.stopping,
+            memoryInUse: store.memoryInUse, processesSampledAt: store.processesSampledAt,
             fetch: { run { await store.fetchAll() } },
             refreshSizes: { store.refreshSizes(of: $0) },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
@@ -107,6 +108,10 @@ struct MainView: View {
     let isBusy: Bool
     /// The groups whose stop is under way (`DashboardStore.stopping`).
     let stopping: Set<Int32>
+    /// The memory in use on the Mac (`DashboardStore.memoryInUse`).
+    let memoryInUse: UInt64?
+    /// When the processes were last sampled (`DashboardStore.processesSampledAt`).
+    let processesSampledAt: Date?
     let fetch: () -> Void
     /// Measures the worktrees at these paths again if their sizes are more than a minute old: the one that the
     /// inspector shows, and those of the sheet (`DashboardStore.refreshSizes(of:)`).
@@ -119,6 +124,10 @@ struct MainView: View {
     @State private var filter = ProjectFilter.all
     @State private var query = ""
     @State private var collapsed: Set<String> = []
+    /// The sections of Processes that are open, for as long as the app runs.
+    @State private var expanded: Set<String> = []
+    /// The sections of Processes that have been on the page: only one that is new there is opened on its own.
+    @State private var metSections: Set<String> = []
     @State private var showsInspector: Bool
     @State private var disk: StartupDisk?
     /// Whether the disk is read, now and every 30 seconds. Renders turn it off and pass a disk of their own.
@@ -137,7 +146,8 @@ struct MainView: View {
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
-        stopping: Set<Int32> = [], fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
+        stopping: Set<Int32> = [], memoryInUse: UInt64? = nil, processesSampledAt: Date? = nil,
+        fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
         refresh: @escaping () -> Void, removal: RemovalActions,
         sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
         readsDisk: Bool
@@ -148,6 +158,8 @@ struct MainView: View {
         self.lastUpdated = lastUpdated
         self.isBusy = isBusy
         self.stopping = stopping
+        self.memoryInUse = memoryInUse
+        self.processesSampledAt = processesSampledAt
         self.fetch = fetch
         self.refreshSizes = refreshSizes
         self.refresh = refresh
@@ -164,24 +176,27 @@ struct MainView: View {
             SidebarView(projects: projects, readyCount: ready.count, disk: disk, selection: $sidebar)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
-            detail
-                .navigationTitle(sidebar == .readyToRemove ? "Ready to remove" : "Projects")
-                .navigationSubtitle(sidebar == .readyToRemove ? "" : subtitle)
-                .searchable(text: $query, prompt: "Search")
-                .searchFocused($searchIsFocused)
-                .toolbar { toolbar }
-                .inspector(isPresented: $showsInspector) {
-                    Group {
-                        if let row = selectedRow {
-                            WorktreeInspector(row: row, actions: rowActions)
-                                // When the inspector shows a worktree: on appearing, and for each other one selected.
-                                .task(id: row.id) { refreshSizes([row.id]) }
-                        } else {
-                            Color.clear
-                        }
+            // Every ten seconds, so that "updated just now" of Processes ages without a new sample.
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                detail
+                    .navigationTitle(title)
+                    .navigationSubtitle(subtitle(now: context.date))
+            }
+            .searchable(text: $query, prompt: sidebar == .processes ? "Search processes" : "Search")
+            .searchFocused($searchIsFocused)
+            .toolbar { toolbar }
+            .inspector(isPresented: $showsInspector) {
+                Group {
+                    if let row = selectedRow {
+                        WorktreeInspector(row: row, actions: rowActions)
+                            // When the inspector shows a worktree: on appearing, and for each other one selected.
+                            .task(id: row.id) { refreshSizes([row.id]) }
+                    } else {
+                        Color.clear
                     }
-                    .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
+            }
         }
         .focusedSceneValue(\.windowCommands, commands)
         .sheet(item: $ask) { ask in
@@ -246,6 +261,8 @@ struct MainView: View {
                     ReadyToRemoveSection(rows: ready, selection: $selection, actions: rowActions, capped: false).padding(20)
                 }
             }
+        case .processes:
+            processesView
         case .projects:
             projectsView(repoPath: nil)
         case .repository(let path):
@@ -258,6 +275,32 @@ struct MainView: View {
             projects: ProjectFilter.visible(projects, filter: filter, query: query, repoPath: repoPath),
             ready: repoPath == nil ? ready : ready.filter { $0.repoPath == repoPath },
             filter: $filter, selection: $selection, collapsed: $collapsed, actions: rowActions)
+    }
+
+    /// The page for the search, or why there is nothing on it: nothing runs, or the search matches none of it.
+    @ViewBuilder private var processesView: some View {
+        let page = ProcessesPage(projects: projects, query: query)
+        if !page.sections.isEmpty {
+            ProcessesView(
+                page: page, memoryInUse: memoryInUse, selection: $selection, expanded: $expanded, actions: rowActions
+            )
+            .onChange(of: page.sections.map(\.id), initial: true) { _, _ in meet(page.sections) }
+        } else if ProcessesPage(projects: projects).sections.isEmpty {
+            ContentUnavailableView(
+                "Nothing runs in your projects", systemImage: "waveform.path.ecg",
+                description: Text("Processes that run in a project folder, or were started from one, show up here."))
+        } else {
+            ContentUnavailableView.search(text: query)
+        }
+    }
+
+    /// Opens a section that the page has not shown before if it is among the first two; one that the user has opened
+    /// or closed stays as they left it.
+    private func meet(_ sections: [ProcessSection]) {
+        let new = Set(sections.map(\.id)).subtracting(metSections)
+        guard !new.isEmpty else { return }
+        expanded.formUnion(sections.prefix(2).map(\.id).filter(new.contains))
+        metSections.formUnion(new)
     }
 
     private var selectedRow: WorktreeRow? {
@@ -361,6 +404,23 @@ struct MainView: View {
     }
 
     // MARK: Toolbar
+
+    private var title: String {
+        switch sidebar {
+        case .readyToRemove: "Ready to remove"
+        case .processes: "Processes"
+        default: "Projects"
+        }
+    }
+
+    private func subtitle(now date: Date) -> String {
+        switch sidebar {
+        case .readyToRemove: ""
+        case .processes:
+            ProcessesPresenter.subtitle(ProcessesPage(projects: projects), updated: processesSampledAt, now: date)
+        default: subtitle
+        }
+    }
 
     private var subtitle: String {
         let worktrees = projects.reduce(0) { $0 + $1.worktrees.count }

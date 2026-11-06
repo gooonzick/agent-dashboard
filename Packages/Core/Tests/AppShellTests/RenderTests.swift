@@ -59,6 +59,17 @@ import Testing
         #expect(try distinctColours(of: other) > 10)
     }
 
+    /// The Processes page of the mockup, with the inspector closed as there.
+    @Test(arguments: [false, true]) func theProcessesPageDraws(dark: Bool) throws {
+        let main = MainView(
+            projects: Fixtures.running, ready: [], scanState: .idle, lastUpdated: Date(), isBusy: false,
+            memoryInUse: 16_320_875_725, processesSampledAt: Date(), fetch: {}, refresh: {}, removal: .inert,
+            sidebar: .processes, showsInspector: false, disk: Fixtures.disk, readsDisk: false)
+        let image = try snapshot(main, size: NSSize(width: 1440, height: 900), dark: dark)
+        _ = try write(image, name: "processes-\(dark ? "dark" : "light").png")
+        #expect(try distinctColours(of: image) > 20)
+    }
+
     /// The first-run window.
     @Test(arguments: [false, true]) func theOnboardingDraws(dark: Bool) throws {
         let view = OnboardingView(start: {}).frame(width: 900, height: 560)
@@ -223,6 +234,71 @@ enum Fixtures {
             eligibility: .manual(needsStopping: true))
     }()
 
+    /// What runs in the mockup of Processes: dashboard with a dev server on 4200 and a session of almost a day, minuta
+    /// with a session of almost a week, an app built there and shells and helpers, three worktrees of dashboard, and
+    /// meetily.
+    static let running: [ProjectRow] = [
+        project(
+            "dashboard", branch: "main",
+            groups: [
+                group(
+                    .devServer, "vite · nx serve web", process(50123, "node", 412 << 20, age: 18 * 60, ports: [4200])),
+                group(
+                    .agentSession, "Claude Code · desktop, 6 MCP servers",
+                    process(95670, "claude", 272 << 20, age: 86_160)),
+                group(.daemon, "codex app-server", process(21642, "codex", 25 << 20, age: 15 * 86_400)),
+                group(.daemon, "herdr server", process(44478, "herdr", 2 << 20, age: 15 * 86_400)),
+            ] + (6001...6004).map { group(.shell, "zsh", process($0, "zsh", 5_767_168, age: 7_200)) },
+            [
+                ("PYMEP-3330-overdraft-drawer-agreement-caratula", Int32(31001), UInt64(386)),
+                ("PYMEP-3098-overdraft-details-operfeed", 32001, 222),
+                ("PYMEP-3282-update-cashback-permissions", 33001, 190),
+            ].map { name, pid, megabytes in
+                let members = (1...8).map { process(pid + Int32($0), "node", 10 << 20, age: 3_600) }
+                return worktree(
+                    "dashboard", "/Users/me/Development/dashboard-worktrees/" + name, branch: "feat/" + name,
+                    review: .init(state: .open, number: 8200), status: .init(upstream: "origin/feat/" + name),
+                    groups: [
+                        group(
+                            .agentSession, "Claude Code · CLI, 4 MCP servers",
+                            process(pid, "claude", (megabytes - 80) << 20, age: 5_400), members: members)
+                    ],
+                    size: nil, eligibility: .manual(needsStopping: true))
+            }),
+        project(
+            "minuta", branch: "main",
+            groups: [
+                group(
+                    .agentSession, "Claude Code · CLI, 5 MCP servers",
+                    process(29055, "claude", 210 << 20, age: 597_600)),
+                group(
+                    .agentSession, "Claude Code · desktop, 6 MCP servers",
+                    process(21919, "claude", 314 << 20, age: 13 * 60)),
+                group(.builtHere, "Minuta.app", process(8490, "Minuta", 11 << 20, age: 72 * 60)),
+            ] + (7001...7003).map { group(.shell, "zsh", process($0, "zsh", 3 << 20, age: 3_600)) }
+                + (7101...7102).map { group(.other, "esbuild", process($0, "esbuild", 45 << 20, age: 3_600)) },
+            []),
+        project(
+            "meetily", branch: "main",
+            groups: [
+                group(.daemon, "meetily-backend", process(9120, "meetily-backend", 18 << 20, age: 2 * 86_400))
+            ], []),
+    ]
+
+    private static func process(
+        _ pid: Int32, _ name: String, _ bytes: UInt64, age: TimeInterval, ports: [UInt16] = []
+    ) -> ProcessRecord {
+        ProcessRecord(
+            pid: pid, ppid: 1, name: name, executablePath: nil, arguments: [], cwd: nil, footprintBytes: bytes,
+            startDate: Date(timeIntervalSinceNow: -age), listeningPorts: ports)
+    }
+
+    private static func group(
+        _ kind: ProcessKind, _ title: String, _ leader: ProcessRecord, members: [ProcessRecord] = []
+    ) -> ProcessGroup {
+        ProcessGroup(kind: kind, title: title, leader: leader, members: members)
+    }
+
     private static func record(_ pid: Int32, _ name: String, _ bytes: UInt64) -> ProcessRecord {
         ProcessRecord(
             pid: pid, ppid: 1, name: name, executablePath: nil, arguments: [], cwd: nil, footprintBytes: bytes,
@@ -271,13 +347,14 @@ enum Fixtures {
     ]
 
     private static func project(
-        _ name: String, branch: String, behind: Int = 0, ahead: Int = 0, _ worktrees: [WorktreeRow]
+        _ name: String, branch: String, behind: Int = 0, ahead: Int = 0, groups: [ProcessGroup] = [],
+        _ worktrees: [WorktreeRow]
     ) -> ProjectRow {
         let path = "/Users/me/Development/" + name
         let main = WorktreeRow(
             repoPath: path, repoName: name, worktree: Worktree(path: path, branch: branch, isMain: true),
             status: .init(upstream: "origin/" + branch, ahead: ahead, behind: behind), review: .none, hosting: .gitlab,
-            groups: [], size: .init(apparentBytes: 1_200_000_000, privateBytes: 1_100_000_000, computedAt: .now),
+            groups: groups, size: .init(apparentBytes: 1_200_000_000, privateBytes: 1_100_000_000, computedAt: .now),
             eligibility: .mainWorktree)
         let linked = worktrees.map {
             WorktreeRow(
