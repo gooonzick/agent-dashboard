@@ -54,6 +54,8 @@ final class Scene {
     let settings: SettingsStore
     let cache: DashboardCache
     private let date = FakeDate()
+    /// The memory that `env.systemMemory` says is in use: a fixed value, so that no test reads the Mac it runs on.
+    var systemMemory: UInt64? = 4 << 30
 
     init(
         scanner: FakeScanner = FakeScanner(), git: FakeGit = FakeGit(), reviews: FakeReviews = FakeReviews(),
@@ -81,12 +83,14 @@ final class Scene {
         -> DashboardEnvironment
     {
         let clock = self.clock
+        let systemMemory = self.systemMemory
         var env = DashboardEnvironment(
             scanner: scanner, git: git, reviews: reviews ?? self.reviews, hosting: hosting ?? self.hosting,
             sizes: sizes, sampler: sampler, signaler: signaler, remover: remover, watcher: watcher, cache: cache,
             settings: settings, now: { [date] in date.now },
             sleep: { try await clock.sleep(for: $0) })
         env.stopTimeout = .milliseconds(100)
+        env.systemMemory = { systemMemory }
         return env
     }
 

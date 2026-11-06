@@ -258,9 +258,12 @@ enum ProcessGroups {
         return ProcessAttributor(roots: roots).attribute(processes.filter { !own.contains($0.pid) })
     }
 
-    /// A sample of the processes, attributed: off the main actor, for both take a while.
+    /// A sample of the processes, attributed, and the memory in use at the time: off the main actor, for all of it takes
+    /// a while.
     @concurrent
-    static func sample(_ sampler: any ProcessSampling, roots: [String]) async -> [String: [ProcessGroup]] {
-        attribute(sampler.sample(), to: roots)
+    static func sample(
+        _ sampler: any ProcessSampling, roots: [String], memory: @Sendable () -> UInt64?
+    ) async -> (groups: [String: [ProcessGroup]], memoryInUse: UInt64?) {
+        (attribute(sampler.sample(), to: roots), memory())
     }
 }

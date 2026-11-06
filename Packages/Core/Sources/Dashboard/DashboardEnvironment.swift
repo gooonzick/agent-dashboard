@@ -27,6 +27,8 @@ public struct DashboardEnvironment: Sendable {
     public var sleep: @Sendable (Duration) async throws -> Void
     /// How long a process that was told to stop gets before it is killed (`ProcessStopper`). Tests make it short.
     public var stopTimeout: Duration = .seconds(5)
+    /// The bytes of memory in use on the Mac, read with each sample of the processes. `nil` if it cannot be read.
+    public var systemMemory: @Sendable () -> UInt64? = SystemMemory.inUse
 
     public init(
         scanner: any RepoScanning, git: any GitReading, reviews: any ReviewLooking, hosting: any HostingDetecting,

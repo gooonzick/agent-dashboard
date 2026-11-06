@@ -60,4 +60,28 @@ import Testing
         #expect(changed.withLock { $0 })
         #expect(store.row(worktree.path)?.groups.count ?? 0 >= 1)
     }
+
+    @Test func eachSampleNotesTheTimeAndTheMemoryInUse() async throws {
+        let scene = try Scene()
+        scene.systemMemory = 8 << 30
+        let worktree = linked("/x/wt", branch: "feature")
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.sampler.set([process(600, name: "node", cwd: worktree.path)])
+        let store = await scene.startedStore()
+        #expect(store.processesSampledAt == nil && store.memoryInUse == nil)
+
+        await store.sampleProcesses()
+
+        #expect(store.processesSampledAt == scene.now)
+        #expect(store.memoryInUse == 8 << 30)
+
+        // The same sample again publishes no row, and still says when it was taken.
+        let changed = Mutex(false)
+        withObservationTracking { _ = store.projects } onChange: { changed.withLock { $0 = true } }
+        scene.passTime(3)
+        await store.sampleProcesses()
+
+        #expect(store.processesSampledAt == scene.now)
+        #expect(!changed.withLock { $0 })
+    }
 }

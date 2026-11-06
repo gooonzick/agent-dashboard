@@ -46,6 +46,11 @@ struct Repository {
     public private(set) var projects: [ProjectRow] = []
     public private(set) var scanState: ScanState = .idle
     public private(set) var lastUpdated: Date?
+    /// When the processes were sampled last. It moves with every sample, whether the sample found anything new or not:
+    /// the rows are not built again for it, and so it is read apart from `projects`.
+    public private(set) var processesSampledAt: Date?
+    /// The bytes of memory in use on the Mac at that sample, `nil` if it could not be read.
+    public private(set) var memoryInUse: UInt64?
     /// Whether `start()` is running, from the first line of it to the last: a second `start()` in that time does
     /// nothing, so the window waits for this to be `false` before it offers one.
     public private(set) var isStarting = false
@@ -368,7 +373,9 @@ struct Repository {
 
     /// Asks for a sample of the processes, and shows what runs where.
     func sampleProcesses() async {
-        let sampled = await ProcessGroups.sample(env.sampler, roots: worktreeRoots)
+        let (sampled, memory) = await ProcessGroups.sample(env.sampler, roots: worktreeRoots, memory: env.systemMemory)
+        processesSampledAt = env.now()
+        memoryInUse = memory
         // Most samples find what the last one found. Publishing anyway would build every row again and have the table
         // drawn again for nothing, every 3 seconds.
         guard sampled != groups else { return }
