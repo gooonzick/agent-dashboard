@@ -84,4 +84,30 @@ import Testing
         #expect(store.processesSampledAt == scene.now)
         #expect(!changed.withLock { $0 })
     }
+
+    /// What the window reads to build itself does not move with a sample that finds nothing new: only the time of the
+    /// sample and the memory in use do, which the window reads in the views that show them.
+    @Test func aSampleThatFindsWhatTheLastOneFoundLeavesWhatTheWindowReadsAlone() async throws {
+        let scene = try Scene()
+        let worktree = linked("/x/wt", branch: "feature")
+        scene.addRepository("/x/repo", worktrees: [worktree])
+        scene.sampler.set([process(600, name: "node", cwd: worktree.path)])
+        let store = await scene.startedStore()
+        await store.sampleProcesses()
+
+        let window = Mutex(false)
+        let sample = Mutex(false)
+        withObservationTracking {
+            _ = (store.didOnboard, store.projects, store.readyToRemove, store.scanState, store.lastUpdated)
+            _ = (store.isStarting, store.stopping)
+        } onChange: {
+            window.withLock { $0 = true }
+        }
+        withObservationTracking { _ = store.processesSampledAt } onChange: { sample.withLock { $0 = true } }
+        scene.passTime(3)
+        await store.sampleProcesses()
+
+        #expect(!window.withLock { $0 })
+        #expect(sample.withLock { $0 })
+    }
 }

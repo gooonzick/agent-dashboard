@@ -37,7 +37,9 @@ public struct RootView: View {
         MainView(
             projects: store.projects, ready: store.readyToRemove, scanState: store.scanState,
             lastUpdated: store.lastUpdated, isBusy: working || store.isStarting, stopping: store.stopping,
-            memoryInUse: store.memoryInUse, processesSampledAt: store.processesSampledAt,
+            // A read, not the values: they move with every sample, and only the subtitle and the memory line of
+            // Processes show them. Read here, they would have the whole window built again every 3 seconds.
+            processSample: { (store.processesSampledAt, store.memoryInUse) },
             fetch: { run { await store.fetchAll() } },
             refreshSizes: { store.refreshSizes(of: $0) },
             // A scan, then git and the hosts anew for every repository: the one call that does all of it. It does
@@ -92,6 +94,9 @@ struct RemovalActions {
     }
 }
 
+/// When the processes were last sampled, and the bytes of memory in use on the Mac then.
+typealias ProcessSample = (sampledAt: Date?, memoryInUse: UInt64?)
+
 /// A removal that waits for the user to confirm it in the sheet.
 private struct RemovalAsk: Identifiable {
     let id = UUID()
@@ -108,10 +113,9 @@ struct MainView: View {
     let isBusy: Bool
     /// The groups whose stop is under way (`DashboardStore.stopping`).
     let stopping: Set<Int32>
-    /// The memory in use on the Mac (`DashboardStore.memoryInUse`).
-    let memoryInUse: UInt64?
-    /// When the processes were last sampled (`DashboardStore.processesSampledAt`).
-    let processesSampledAt: Date?
+    /// When the processes were last sampled and the memory in use on the Mac (`DashboardStore.processesSampledAt`,
+    /// `memoryInUse`). Called only by the views that show them, so that a sample redraws those alone.
+    let processSample: () -> ProcessSample
     let fetch: () -> Void
     /// Measures the worktrees at these paths again if their sizes are more than a minute old: the one that the
     /// inspector shows, and those of the sheet (`DashboardStore.refreshSizes(of:)`).
@@ -146,7 +150,7 @@ struct MainView: View {
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
-        stopping: Set<Int32> = [], memoryInUse: UInt64? = nil, processesSampledAt: Date? = nil,
+        stopping: Set<Int32> = [], processSample: @escaping () -> ProcessSample = { (nil, nil) },
         fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
         refresh: @escaping () -> Void, removal: RemovalActions,
         sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
@@ -158,8 +162,7 @@ struct MainView: View {
         self.lastUpdated = lastUpdated
         self.isBusy = isBusy
         self.stopping = stopping
-        self.memoryInUse = memoryInUse
-        self.processesSampledAt = processesSampledAt
+        self.processSample = processSample
         self.fetch = fetch
         self.refreshSizes = refreshSizes
         self.refresh = refresh
@@ -282,7 +285,8 @@ struct MainView: View {
         let page = ProcessesPage(projects: projects, query: query)
         if !page.sections.isEmpty {
             ProcessesView(
-                page: page, memoryInUse: memoryInUse, selection: $selection, expanded: $expanded, actions: rowActions
+                page: page, memoryInUse: { processSample().memoryInUse }, selection: $selection, expanded: $expanded,
+                actions: rowActions
             )
             .onChange(of: page.sections.map(\.id), initial: true) { _, _ in meet(page.sections) }
         } else if ProcessesPage(projects: projects).sections.isEmpty {
@@ -417,7 +421,8 @@ struct MainView: View {
         switch sidebar {
         case .readyToRemove: ""
         case .processes:
-            ProcessesPresenter.subtitle(ProcessesPage(projects: projects), updated: processesSampledAt, now: date)
+            ProcessesPresenter.subtitle(
+                ProcessesPage(projects: projects), updated: processSample().sampledAt, now: date)
         default: subtitle
         }
     }

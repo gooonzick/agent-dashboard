@@ -63,7 +63,7 @@ import Testing
     @Test(arguments: [false, true]) func theProcessesPageDraws(dark: Bool) throws {
         let main = MainView(
             projects: Fixtures.running, ready: [], scanState: .idle, lastUpdated: Date(), isBusy: false,
-            memoryInUse: 16_320_875_725, processesSampledAt: Date(), fetch: {}, refresh: {}, removal: .inert,
+            processSample: { (Date(), 16_320_875_725) }, fetch: {}, refresh: {}, removal: .inert,
             sidebar: .processes, showsInspector: false, disk: Fixtures.disk, readsDisk: false)
         let image = try snapshot(main, size: NSSize(width: 1440, height: 900), dark: dark)
         _ = try write(image, name: "processes-\(dark ? "dark" : "light").png")

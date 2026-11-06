@@ -7,8 +7,9 @@ import SwiftUI
 /// processes under it.
 struct ProcessesView: View {
     let page: ProcessesPage
-    /// The memory in use on the whole Mac, `nil` while it is not known.
-    let memoryInUse: UInt64?
+    /// The memory in use on the whole Mac, `nil` while it is not known. A read that only the memory line calls: it
+    /// changes with every sample, and the table need not be built again for it.
+    let memoryInUse: () -> UInt64?
     @Binding var selection: String?
     /// The sections that are open (`MainView` opens the first two it meets).
     @Binding var expanded: Set<String>
@@ -40,7 +41,7 @@ struct ProcessesView: View {
 /// The heading, the bar and its legend. A segment or a name of the legend selects its worktree.
 private struct MemoryByProject: View {
     let page: ProcessesPage
-    let memoryInUse: UInt64?
+    let memoryInUse: () -> UInt64?
     @Binding var selection: String?
 
     var body: some View {
@@ -48,7 +49,7 @@ private struct MemoryByProject: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Memory by project").font(.headline)
                 Spacer()
-                if let inUse = ProcessesPresenter.inUse(page, of: memoryInUse) {
+                if let inUse = ProcessesPresenter.inUse(page, of: memoryInUse()) {
                     Text(inUse).font(.callout).foregroundStyle(.secondary)
                 }
             }
