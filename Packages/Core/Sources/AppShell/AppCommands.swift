@@ -45,10 +45,13 @@ struct WindowCommands {
     var showReadyToRemove: () -> Void
 
     /// Whether Remove… is offered: the selected row can be removed, the search field does not have the keys (⌘⌫ there
-    /// deletes to the start of the line, and the menu sees the key first), and no sheet is open (it would swap the
-    /// rows of the sheet under the user).
-    static func offersRemove(selectionIsRemovable: Bool, searchIsFocused: Bool, sheetIsOpen: Bool) -> Bool {
-        selectionIsRemovable && !searchIsFocused && !sheetIsOpen
+    /// deletes to the start of the line, and the menu sees the key first), no sheet is open (it would swap the rows of
+    /// the sheet under the user), and the page is not Processes, where a line of a process selects its worktree and
+    /// ⌘⌫ is not meant for that.
+    static func offersRemove(
+        selectionIsRemovable: Bool, searchIsFocused: Bool, sheetIsOpen: Bool, onProcesses: Bool = false
+    ) -> Bool {
+        selectionIsRemovable && !searchIsFocused && !sheetIsOpen && !onProcesses
     }
 
     /// Whether Refresh and Fetch All are offered: as their toolbar buttons are, and not while a sheet is open.

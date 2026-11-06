@@ -14,6 +14,13 @@ import Testing
         #expect(!WindowCommands.offersRemove(selectionIsRemovable: true, searchIsFocused: true, sheetIsOpen: false))
     }
 
+    @Test func removeIsNotOfferedOnTheProcessesPage() {
+        // A line of a process selects its worktree; ⌘⌫ there would open the removal of the worktree.
+        #expect(
+            !WindowCommands.offersRemove(
+                selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: false, onProcesses: true))
+    }
+
     @Test func nothingThatChangesTheRowsIsOfferedWhileTheSheetIsOpen() {
         #expect(!WindowCommands.offersRemove(selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: true))
         #expect(!WindowCommands.offersRefresh(isBusy: false, isScanning: false, sheetIsOpen: true))

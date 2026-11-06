@@ -404,7 +404,7 @@ struct MainView: View {
         if let row = selectedRow,
             WindowCommands.offersRemove(
                 selectionIsRemovable: rowActions.canRemove(row), searchIsFocused: searchIsFocused,
-                sheetIsOpen: sheetIsOpen)
+                sheetIsOpen: sheetIsOpen, onProcesses: self.sidebar == .processes)
         {
             commands.removeSelection = { requestRemoval([row], fromRowButton: false) }
         }
