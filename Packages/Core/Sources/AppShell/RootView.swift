@@ -179,27 +179,29 @@ struct MainView: View {
             SidebarView(projects: projects, readyCount: ready.count, disk: disk, selection: $sidebar)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
-            // Every ten seconds, so that "updated just now" of Processes ages without a new sample.
-            TimelineView(.periodic(from: .now, by: 10)) { context in
-                detail
-                    .navigationTitle(title)
-                    .navigationSubtitle(subtitle(now: context.date))
-            }
-            .searchable(text: $query, prompt: sidebar == .processes ? "Search processes" : "Search")
-            .searchFocused($searchIsFocused)
-            .toolbar { toolbar }
-            .inspector(isPresented: $showsInspector) {
-                Group {
-                    if let row = selectedRow {
-                        WorktreeInspector(row: row, actions: rowActions)
-                            // When the inspector shows a worktree: on appearing, and for each other one selected.
-                            .task(id: row.id) { refreshSizes([row.id]) }
-                    } else {
-                        Color.clear
+            // The whole of Processes, for its subtitle and for whether anything runs at all, once.
+            let processes = sidebar == .processes ? ProcessesPage(projects: projects) : nil
+            detail(processes)
+                .navigationTitle(title)
+                .modifier(
+                    WindowSubtitle(
+                        text: sidebar == .readyToRemove ? "" : subtitle, processes: processes,
+                        sampledAt: { processSample().sampledAt }))
+                .searchable(text: $query, prompt: sidebar == .processes ? "Search processes" : "Search")
+                .searchFocused($searchIsFocused)
+                .toolbar { toolbar }
+                .inspector(isPresented: $showsInspector) {
+                    Group {
+                        if let row = selectedRow {
+                            WorktreeInspector(row: row, actions: rowActions)
+                                // When the inspector shows a worktree: on appearing, and for each other one selected.
+                                .task(id: row.id) { refreshSizes([row.id]) }
+                        } else {
+                            Color.clear
+                        }
                     }
+                    .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
-            }
         }
         .focusedSceneValue(\.windowCommands, commands)
         .sheet(item: $ask) { ask in
@@ -256,7 +258,8 @@ struct MainView: View {
 
     // MARK: Detail
 
-    @ViewBuilder private var detail: some View {
+    /// `processes` is the whole of Processes when that is the page, `nil` otherwise.
+    @ViewBuilder private func detail(_ processes: ProcessesPage?) -> some View {
         switch sidebar ?? .projects {
         case .readyToRemove:
             ScrollView {
@@ -265,7 +268,7 @@ struct MainView: View {
                 }
             }
         case .processes:
-            processesView
+            processesView(all: processes ?? ProcessesPage(projects: projects))
         case .projects:
             projectsView(repoPath: nil)
         case .repository(let path):
@@ -280,16 +283,17 @@ struct MainView: View {
             filter: $filter, selection: $selection, collapsed: $collapsed, actions: rowActions)
     }
 
-    /// The page for the search, or why there is nothing on it: nothing runs, or the search matches none of it.
-    @ViewBuilder private var processesView: some View {
-        let page = ProcessesPage(projects: projects, query: query)
+    /// The page for the search, or why there is nothing on it: nothing runs, or the search matches none of it. `all`
+    /// is the page with no search.
+    @ViewBuilder private func processesView(all: ProcessesPage) -> some View {
+        let page = query.isEmpty ? all : ProcessesPage(projects: projects, query: query)
         if !page.sections.isEmpty {
             ProcessesView(
                 page: page, memoryInUse: { processSample().memoryInUse }, selection: $selection, expanded: $expanded,
                 actions: rowActions
             )
             .onChange(of: page.sections.map(\.id), initial: true) { _, _ in meet(page.sections) }
-        } else if ProcessesPage(projects: projects).sections.isEmpty {
+        } else if all.sections.isEmpty {
             ContentUnavailableView(
                 "Nothing runs in your projects", systemImage: "waveform.path.ecg",
                 description: Text("Processes that run in a project folder, or were started from one, show up here."))
@@ -417,16 +421,6 @@ struct MainView: View {
         }
     }
 
-    private func subtitle(now date: Date) -> String {
-        switch sidebar {
-        case .readyToRemove: ""
-        case .processes:
-            ProcessesPresenter.subtitle(
-                ProcessesPage(projects: projects), updated: processSample().sampledAt, now: date)
-        default: subtitle
-        }
-    }
-
     private var subtitle: String {
         let worktrees = projects.reduce(0) { $0 + $1.worktrees.count }
         var text = "\(projects.count) repositories · \(worktrees) worktrees"
@@ -458,6 +452,24 @@ struct MainView: View {
         ToolbarItem {
             Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }
                 .help("Inspector")
+        }
+    }
+}
+
+/// The subtitle of the page: `text`, or on Processes the counts of `processes` and how long ago the processes were
+/// sampled.
+///
+/// The time of the sample is read here alone, and the ten-second timeline that ages "updated just now" runs here: a
+/// sample, or a tick, draws the subtitle again and leaves the page under it as it was.
+private struct WindowSubtitle: ViewModifier {
+    let text: String
+    let processes: ProcessesPage?
+    let sampledAt: () -> Date?
+
+    func body(content: Content) -> some View {
+        TimelineView(.periodic(from: .now, by: 10)) { context in
+            content.navigationSubtitle(
+                processes.map { ProcessesPresenter.subtitle($0, updated: sampledAt(), now: context.date) } ?? text)
         }
     }
 }

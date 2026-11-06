@@ -85,9 +85,10 @@ import Testing
         #expect(!changed.withLock { $0 })
     }
 
-    /// What the window reads to build itself does not move with a sample that finds nothing new: only the time of the
-    /// sample and the memory in use do, which the window reads in the views that show them.
-    @Test func aSampleThatFindsWhatTheLastOneFoundLeavesWhatTheWindowReadsAlone() async throws {
+    /// The store's side of a window that is not built again for a sample that finds nothing new: of what `RootView`
+    /// reads from the store, nothing moves; only the time of the sample does, which the window reads in the views
+    /// that show it. That `RootView` does not read that time is not tested here.
+    @Test func aSampleThatFindsNothingNewMovesNoneOfTheStoreValuesThatRootViewReads() async throws {
         let scene = try Scene()
         let worktree = linked("/x/wt", branch: "feature")
         scene.addRepository("/x/repo", worktrees: [worktree])
