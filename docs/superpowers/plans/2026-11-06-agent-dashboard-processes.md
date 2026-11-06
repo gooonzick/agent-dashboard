@@ -172,7 +172,7 @@ public enum ProcessesPresenter {
   - `DashboardStore.memoryInUse`, `processesSampledAt` (Task 1);
   - `RowActions.stop`, `stopping`, `canStop` и `requestStop(_:of:)` из `MainView`;
   - `WorktreeInspector`.
-- Produces: `SidebarItem.processes`; `struct ProcessesView: View` с `init(page: ProcessesPage, memoryInUse: UInt64?, selection: Binding<String?>, expanded: Binding<Set<String>>, actions: RowActions)`.
+- Produces: `SidebarItem.processes`; `struct ProcessesView: View` с `init(page: ProcessesPage, memoryInUse: () -> UInt64?, selection: Binding<String?>, expanded: Binding<Set<String>>, actions: RowActions)`.
 
 - [ ] **Step 1: Сайдбар.**
   - Пункт `Label("Processes", systemImage: "waveform.path.ecg")` стоит после «Ready to remove».
