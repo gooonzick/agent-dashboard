@@ -283,8 +283,8 @@ struct MainView: View {
             filter: $filter, selection: $selection, collapsed: $collapsed, actions: rowActions)
     }
 
-    /// The page for the search, or why there is nothing on it: nothing runs, or the search matches none of it. `all`
-    /// is the page with no search.
+    /// The page for the search, or why there is nothing on it: nothing runs (or nothing was looked for yet), or the
+    /// search matches none of it. `all` is the page with no search.
     @ViewBuilder private func processesView(all: ProcessesPage) -> some View {
         let page = query.isEmpty ? all : ProcessesPage(projects: projects, query: query)
         if !page.sections.isEmpty {
@@ -294,9 +294,7 @@ struct MainView: View {
             )
             .onChange(of: page.sections.map(\.id), initial: true) { _, _ in meet(page.sections) }
         } else if all.sections.isEmpty {
-            ContentUnavailableView(
-                "Nothing runs in your projects", systemImage: "waveform.path.ecg",
-                description: Text("Processes that run in a project folder, or were started from one, show up here."))
+            NothingRuns(sampledAt: { processSample().sampledAt })
         } else {
             ContentUnavailableView.search(text: query)
         }
@@ -452,6 +450,24 @@ struct MainView: View {
         ToolbarItem {
             Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }
                 .help("Inspector")
+        }
+    }
+}
+
+/// What the Processes page says when it has no process to list: that nothing runs, but only once the processes were
+/// sampled, and that they are being looked for until then.
+///
+/// The time of the sample is read here alone, as in `WindowSubtitle`: the first sample draws this view, not the page.
+private struct NothingRuns: View {
+    let sampledAt: () -> Date?
+
+    var body: some View {
+        if sampledAt() == nil {
+            ProgressView("Looking for processes…")
+        } else {
+            ContentUnavailableView(
+                "Nothing runs in your projects", systemImage: "waveform.path.ecg",
+                description: Text("Processes that run in a project folder, or were started from one, show up here."))
         }
     }
 }

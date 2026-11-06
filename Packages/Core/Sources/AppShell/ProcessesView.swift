@@ -49,9 +49,7 @@ private struct MemoryByProject: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Memory by project").font(.headline)
                 Spacer()
-                if let inUse = ProcessesPresenter.inUse(page, of: memoryInUse()) {
-                    Text(inUse).font(.callout).foregroundStyle(.secondary)
-                }
+                InUseText(page: page, memoryInUse: memoryInUse)
             }
             bar
             legend
@@ -104,6 +102,19 @@ private struct MemoryByProject: View {
     private static let gap: CGFloat = 2
 }
 
+/// How much of the memory of the Mac the worktrees use. The one view that calls `memoryInUse`, so that a sample draws
+/// this text and leaves the heading, the bar and the legend as they were.
+private struct InUseText: View {
+    let page: ProcessesPage
+    let memoryInUse: () -> UInt64?
+
+    var body: some View {
+        if let inUse = ProcessesPresenter.inUse(page, of: memoryInUse()) {
+            Text(inUse).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: Table
 
 /// One line of the table: the head of a section, or one of its processes.
@@ -139,7 +150,7 @@ private struct ProcessesTable: View {
                 .width(min: 80, ideal: 100)
             TableColumn("PID") { node in
                 if let line = node.line {
-                    Text(line.pid.map(String.init) ?? "–").monospaced().foregroundStyle(.secondary)
+                    Text(line.pid.map(String.init) ?? "—").monospaced().foregroundStyle(.secondary)
                 }
             }
             .width(min: 50, ideal: 60)
@@ -200,9 +211,11 @@ private struct ProcessNameCell: View {
                 Image(systemName: line.symbol)
                     .foregroundStyle(line.groups.first?.kind == .agentSession ? Color.orange : Color.secondary)
                     .frame(width: 16)
+                    // The Kind column says the same.
+                    .accessibilityHidden(true)
                 Text(line.title).lineLimit(1).truncationMode(.tail)
             } else {
-                Image(systemName: "folder").foregroundStyle(.blue).frame(width: 16)
+                Image(systemName: "folder").foregroundStyle(.blue).frame(width: 16).accessibilityHidden(true)
                 Text(node.section.title).font(.headline).lineLimit(1).truncationMode(.middle).layoutPriority(1)
                 Text(node.section.subtitle).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -254,6 +267,7 @@ private struct UptimeCell: View {
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(.orange.quaternary, in: .capsule)
+                        .accessibilityLabel("\(uptime.text), running for over a day")
                 } else {
                     Text(uptime.text).lineLimit(1)
                 }
@@ -272,7 +286,8 @@ private struct StopCell: View {
 
     var body: some View {
         let row = node.section.row
-        let groups = node.line?.groups ?? row.groups
+        // What the section shows: with a search, the lines that match it, which are not all that the worktree runs.
+        let groups = node.line?.groups ?? node.section.lines.flatMap(\.groups)
         let title = node.line?.title ?? node.section.title
         Group {
             if !groups.isEmpty, groups.allSatisfy({ actions.stopping.contains($0.id) }) {
