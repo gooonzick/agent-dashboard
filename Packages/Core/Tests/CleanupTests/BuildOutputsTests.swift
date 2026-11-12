@@ -132,10 +132,10 @@ struct BuildOutputsTests {
         let repo = dir.canonicalPath
         try FileManager.default.createDirectory(atPath: repo + "/.git", withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: repo + "/target", withIntermediateDirectories: true)
-        let git = FakeDocker(
+        let git = FakeCommands(
             installed: ["git"],
             answers: [
-                "git --no-optional-locks -C \(repo) check-ignore -q target": ok(""),
+                "git --no-optional-locks -C \(repo) check-ignore -q -- target": ok(""),
                 "git --no-optional-locks -C \(repo) --literal-pathspecs ls-files -- target": ok("target/keep.txt\n"),
             ])
         let finder = BuildOutputFinder(runner: git)
@@ -326,6 +326,68 @@ struct BuildOutputsTests {
         #expect(exists(repo + "/target"))
     }
 
+    /// `find` does not look inside a build output, which can be gigabytes; `delete` does, before anything goes.
+    @Test func aRepositoryInsideAnOutputIsNotDeleted() async throws {
+        let projects = try Projects()
+        let repo = try await projects.repository("app", ignoring: "build/\ndist/\n")
+        // A repository of its own, with work in it that is in no commit.
+        try projects.folder(repo + "/build/sub")
+        try await projects.git(["init"], in: repo + "/build/sub")
+        try Data("work".utf8).write(to: URL(filePath: repo + "/build/sub/w.txt"))
+        // A worktree, which has a `.git` file, deep down.
+        try projects.folder(repo + "/dist/a/b/c/wt")
+        try Data("gitdir: /elsewhere\n".utf8).write(to: URL(filePath: repo + "/dist/a/b/c/wt/.git"))
+        let outputs = await projects.finder.find(in: [repo])
+        let build = try #require(outputs.first { $0.title == "app/build" })
+        let dist = try #require(outputs.first { $0.title == "app/dist" })
+
+        await #expect(throws: CleanupError.notEligible("holds a git repository: build/sub")) {
+            try await projects.finder.delete(build)
+        }
+        await #expect(throws: CleanupError.notEligible("holds a git repository: dist/a/b/c/wt")) {
+            try await projects.finder.delete(dist)
+        }
+        #expect(exists(repo + "/build/sub/w.txt"))
+        #expect(exists(repo + "/build/sub/artifact.o"))
+        #expect(exists(repo + "/dist/a/b/c/wt/.git"))
+        #expect(exists(repo + "/dist/a/b/c/wt/artifact.o"))
+    }
+
+    /// A folder in the output that cannot be read could hide a repository.
+    @Test func anOutputWithAFolderThatCannotBeReadIsNotDeleted() async throws {
+        let projects = try Projects()
+        let repo = try await projects.repository("app", ignoring: "build/\n")
+        try projects.folder(repo + "/build")
+        try projects.folder(repo + "/build/locked")
+        let output = try #require(await projects.finder.find(in: [repo]).first)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: repo + "/build/locked")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: repo + "/build/locked")
+        }
+
+        await #expect {
+            try await projects.finder.delete(output)
+        } throws: { error in
+            guard case CleanupError.failed(let reason) = error else { return false }
+            return reason == "could not read \(repo)/build/locked"
+        }
+        #expect(exists(repo + "/build/locked"))
+        #expect(exists(repo + "/build/artifact.o"))
+    }
+
+    /// A name that starts with `-` is a path for git, not an option.
+    @Test func aFolderNamedLikeAnOptionIsAPath() async throws {
+        let projects = try Projects()
+        let repo = try await projects.repository("app", ignoring: "build/\n")
+        try projects.folder(repo + "/-x/build")
+
+        let output = try #require(await projects.finder.find(in: [repo]).first)
+        try await projects.finder.delete(output)
+
+        #expect(output.title == "app/-x/build")
+        #expect(!exists(repo + "/-x/build"))
+    }
+
     @Test func aFolderThatIsGoneIsRefused() async throws {
         let projects = try Projects()
         let repo = try await projects.repository("app", ignoring: "target/\n")
@@ -353,10 +415,10 @@ struct BuildOutputsTests {
 
     @Test func onlyABuildOutputStrictlyInsideTheWorktreeIsDeleted() async throws {
         let projects = try Projects()
-        let repo = try await projects.repository("app", ignoring: "target/\nsrc/\nbuild/\n")
+        let repo = try await projects.repository("app", ignoring: "target/\nsrc/\nbuild/\ndist/\n")
         let other = try await projects.repository("other", ignoring: "target/\n")
         for path in [repo + "/src", repo + "/.git/build", repo + "/a/b/c/d/build", repo + "/node_modules/x/build",
-            other + "/target"]
+            repo + "/build/dist", other + "/target"]
         {
             try projects.folder(path)
         }
@@ -369,16 +431,16 @@ struct BuildOutputsTests {
         for path in [repo, other + "/target", projects.sandbox.canonicalPath + "/app-target"] {
             await #expect(throws: CleanupError.pathEscapes(path)) { try await finder.delete(output(path)) }
         }
-        // Inside, but no build output: a name that is not one, inside `.git` or `node_modules`, too deep, or reached
-        // through `..`.
+        // Inside, but no build output: a name that is not one, inside `.git` or `node_modules`, inside another build
+        // output, too deep, or reached through `..`.
         for path in [
-            repo + "/src", repo + "/.git/build", repo + "/node_modules/x/build", repo + "/a/b/c/d/build",
-            repo + "/target/../src", repo + "//build",
+            repo + "/src", repo + "/.git/build", repo + "/node_modules/x/build", repo + "/build/dist",
+            repo + "/a/b/c/d/build", repo + "/target/../src", repo + "//build",
         ] {
             await #expect(throws: CleanupError.notEligible(path)) { try await finder.delete(output(path)) }
         }
         for path in [repo + "/src", repo + "/.git/build", repo + "/a/b/c/d/build", repo + "/node_modules/x/build",
-            other + "/target", repo + "/.git/HEAD"]
+            repo + "/build/dist/artifact.o", other + "/target", repo + "/.git/HEAD"]
         {
             #expect(exists(path))
         }

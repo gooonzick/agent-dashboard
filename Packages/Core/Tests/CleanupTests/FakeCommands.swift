@@ -36,4 +36,7 @@ final class FakeDocker: CommandRunning {
     }
 }
 
+/// The same stand-in, under a name for tests that fake a tool that is not Docker's, such as `git`.
+typealias FakeCommands = FakeDocker
+
 func ok(_ stdout: String) -> CommandResult { CommandResult(exitCode: 0, stdout: stdout, stderr: "") }

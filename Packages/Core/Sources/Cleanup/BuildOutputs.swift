@@ -42,6 +42,9 @@ public protocol BuildOutputFinding: Sendable {
 /// - git ignores it (`check-ignore`) and has no file of it in the index (`ls-files`). A folder git cannot answer for
 ///   is not one.
 ///
+/// `delete` also looks inside the folder, which `find` does not do because it can hold gigabytes: a `.git` at any depth
+/// in it is a repository whose work the worktree's git does not see, and the folder is not deleted.
+///
 /// `@unchecked Sendable`: `FileManager` is the only stored value that is not, and it has no delegate here, which makes
 /// its methods safe to call from any thread.
 public struct BuildOutputFinder: BuildOutputFinding, @unchecked Sendable {
@@ -87,11 +90,12 @@ public struct BuildOutputFinder: BuildOutputFinding, @unchecked Sendable {
         return outputs
     }
 
-    /// The disk is checked before git is asked, and again after it, right before the delete, so that what git takes
-    /// to answer is not part of the window. The folder is deleted through its resolved path, which the checks found
-    /// to be the path itself, and the delete is partial when it stops half way: what was deleted stays deleted, which
-    /// is fine for a build output. A symlink or a repository swapped in between the last check and the delete is a
-    /// window that stays open, accepted for a tool that one person runs on their own machine.
+    /// The disk is checked before git is asked, and again after it, right before the folder is searched for a
+    /// repository and deleted, so that what git takes to answer is not part of the window. The folder is deleted
+    /// through its resolved path, which the checks found to be the path itself, and the delete is partial when it
+    /// stops half way: what was deleted stays deleted, which is fine for a build output. A symlink or a repository
+    /// swapped in between the last check and the delete is a window that stays open, accepted for a tool that one
+    /// person runs on their own machine.
     public func delete(_ output: BuildOutput) async throws {
         let relative = try check(output)
         switch await state(of: relative, in: output.worktree) {
@@ -100,6 +104,7 @@ public struct BuildOutputFinder: BuildOutputFinding, @unchecked Sendable {
         case .unknown(let reason): throw CleanupError.failed(reason)
         }
         let target = output.worktree + "/" + (try check(output))
+        try refuseRepositories(in: target, below: output.worktree)
         do {
             try fileManager.removeItem(atPath: target)
         } catch {
@@ -153,12 +158,41 @@ public struct BuildOutputFinder: BuildOutputFinding, @unchecked Sendable {
     }
 
     /// Whether `relative` is a path `find` could have offered: plain names only (no `..`, no empty part), at most
-    /// `maxDepth` deep, the last one that of a build output, and none of them a folder that is never entered.
+    /// `maxDepth` deep, the last one that of a build output and none before it, which `find` would not have entered,
+    /// and none of them a folder that is never entered.
     private static func isCandidate(_ relative: String) -> Bool {
         let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         return (1...maxDepth).contains(parts.count)
             && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && !skipped.contains($0) }
             && kinds[parts[parts.count - 1]] != nil
+            && parts.dropLast().allSatisfy { kinds[$0] == nil }
+    }
+
+    /// Throws `notEligible` when there is a `.git` of any kind anywhere in `target`, naming the folder that holds it
+    /// relative to `root`. Links are not followed: the delete takes a link, not what it points at. A folder that cannot
+    /// be read could hide one, so it stops the delete as well.
+    private func refuseRepositories(in target: String, below root: String) throws {
+        var unreadable: String?
+        guard
+            let enumerator = fileManager.enumerator(
+                at: URL(filePath: target, directoryHint: .isDirectory), includingPropertiesForKeys: [],
+                errorHandler: { url, _ in
+                    unreadable = url.path(percentEncoded: false)
+                    return false
+                })
+        else { throw CleanupError.failed("could not read \(target)") }
+        for case let url as URL in enumerator where url.lastPathComponent == ".git" {
+            let holder = url.deletingLastPathComponent().path(percentEncoded: false)
+            throw CleanupError.notEligible("holds a git repository: " + Self.relative(holder, to: root))
+        }
+        if let unreadable { throw CleanupError.failed("could not read \(unreadable)") }
+    }
+
+    /// `path` without `root` and the slash after it, when it starts with them; otherwise `path` as it is.
+    private static func relative(_ path: String, to root: String) -> String {
+        var path = path
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : path
     }
 
     /// Whether a folder from the first one below `root` down to `relative` itself holds a `.git`.
@@ -203,7 +237,7 @@ public struct BuildOutputFinder: BuildOutputFinding, @unchecked Sendable {
         // `check-ignore` exits with 1 for a path that is not ignored, and with 128 for an error.
         let ignored: CommandResult
         do {
-            ignored = try await git(["check-ignore", "-q", relative], in: root)
+            ignored = try await git(["check-ignore", "-q", "--", relative], in: root)
         } catch {
             return .unknown(Self.message(of: error))
         }
