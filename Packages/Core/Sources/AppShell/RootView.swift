@@ -340,8 +340,10 @@ struct MainView: View {
         metSections.formUnion(new)
     }
 
+    /// The worktree that the inspector shows and Remove… acts on; none on a page without worktrees.
     private var selectedRow: WorktreeRow? {
-        selection.flatMap(currentRow)
+        guard (sidebar ?? .projects).showsWorktrees else { return nil }
+        return selection.flatMap(currentRow)
     }
 
     /// The row of the worktree at `path` as the store shows it now.

@@ -295,11 +295,12 @@ private struct ActionButton: View {
         if isWorking {
             ProgressView().controlSize(.small).accessibilityLabel("\(label), under way")
         } else {
-            Button(title, action: action)
+            let button = Button(title, action: action)
                 .controlSize(.small)
                 .disabled(!isEnabled)
-                .help(help ?? "")
                 .accessibilityLabel(label)
+            // No tooltip at all rather than an empty one.
+            if let help { button.help(help) } else { button }
         }
     }
 }

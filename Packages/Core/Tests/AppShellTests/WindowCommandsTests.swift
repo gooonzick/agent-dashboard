@@ -28,6 +28,15 @@ import Testing
                 selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: false, onCaches: true))
     }
 
+    @Test func theCachesPageInspectsNoWorktree() {
+        // A worktree selected on Projects must not bring its Remove and Stop to Caches and Docker (Ruling 13).
+        #expect(!SidebarItem.caches.showsWorktrees)
+        #expect(SidebarItem.projects.showsWorktrees)
+        #expect(SidebarItem.readyToRemove.showsWorktrees)
+        #expect(SidebarItem.processes.showsWorktrees)
+        #expect(SidebarItem.repository("/Users/me/Development/dashboard").showsWorktrees)
+    }
+
     @Test func nothingThatChangesTheRowsIsOfferedWhileTheSheetIsOpen() {
         #expect(!WindowCommands.offersRemove(selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: true))
         #expect(!WindowCommands.offersRefresh(isBusy: false, isScanning: false, sheetIsOpen: true))

@@ -10,6 +10,11 @@ enum SidebarItem: Hashable {
     case processes
     case caches
     case repository(String)
+
+    /// Whether the page shows worktrees, and so whether the inspector shows the one that is selected. Caches and Docker
+    /// shows none (Ruling 13): a selection carried over from Projects would put a worktree's Remove and Stop on a page
+    /// that is about caches.
+    var showsWorktrees: Bool { self != .caches }
 }
 
 /// The startup disk, as the foot of the sidebar shows it.

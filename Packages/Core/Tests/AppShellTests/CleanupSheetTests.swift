@@ -78,6 +78,8 @@ import Testing
                 ])))
         #expect(containers.title == "Remove stopped containers?")
         #expect(containers.items == ["api-db-1 · postgres:16"])
+        // Not the images line: what goes is what the containers wrote (Ruling 12).
+        #expect(containers.consequence == "What these containers wrote outside volumes is deleted.")
         #expect(containers.confirmTitle == "Remove")
     }
 }

@@ -101,7 +101,7 @@ struct CleanupSheetModel: Equatable {
             title = "Remove stopped containers?"
             failureTitle = "Could not remove stopped containers"
             confirmTitle = "Remove"
-            consequence = "Images are pulled again when a container needs them."
+            consequence = "What these containers wrote outside volumes is deleted."
             items = containers.map { "\($0.name) · \($0.image)" }
             itemsArePaths = false
         }
