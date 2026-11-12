@@ -189,6 +189,47 @@ struct DockerKitTests {
         #expect(inventory.volumesSize == 0 && inventory.buildCacheSize == 0)
     }
 
+    @Test func anImageThatAContainerPinnedByDigestRunsFromIsUsed() async throws {
+        let runner = FakeDocker(answers: [
+            "docker image ls -a --format json": ok(
+                """
+                {"ID":"aaaaaaaaaaaa","Repository":"postgres","Tag":"16","Digest":"<none>","Size":"1GB"}
+                {"ID":"bbbbbbbbbbbb","Repository":"redis","Tag":"7","Digest":"<none>","Size":"1GB"}
+                {"ID":"cccccccccccc","Repository":"localhost:5000/app","Tag":"<none>","Digest":"<none>","Size":"1GB"}
+                {"ID":"dddddddddddd","Repository":"nginx","Tag":"1.27","Digest":"sha256:1111","Size":"1GB"}
+                {"ID":"eeeeeeeeeeee","Repository":"postgres","Tag":"15","Digest":"<none>","Size":"1GB"}
+                {"ID":"ffffffffffff","Repository":"node","Tag":"20","Digest":"<none>","Size":"1GB"}
+                """),
+            "docker ps -a --size --format json": ok(
+                """
+                {"ID":"1","Image":"postgres:16@sha256:9999","Names":"a","State":"running","Size":"0B"}
+                {"ID":"2","Image":"redis@sha256:8888","Names":"b","State":"exited","Size":"0B"}
+                {"ID":"3","Image":"localhost:5000/app@sha256:7777","Names":"c","State":"exited","Size":"0B"}
+                {"ID":"4","Image":"web@sha256:1111","Names":"d","State":"exited","Size":"0B"}
+                """),
+            "docker system df --format json": ok(""),
+        ])
+
+        let inventory = try await controller(runner).inventory()
+
+        // By name and tag, by repository without a tag (behind a registry port too), and by the digest Docker lists;
+        // another tag of a pinned tag, and an image no container names, stay unused.
+        #expect(inventory.images.map(\.isUnused) == [false, false, false, false, true, true])
+    }
+
+    @Test func aContainerThatNamesNoImageUsesNone() async throws {
+        let runner = FakeDocker(answers: [
+            "docker image ls -a --format json": ok(
+                #"{"ID":"aaaaaaaaaaaa","Repository":"node","Tag":"20","Size":"1GB"}"#),
+            "docker ps -a --size --format json": ok(#"{"ID":"1","Names":"n","State":"exited","Size":"0B"}"#),
+            "docker system df --format json": ok(""),
+        ])
+
+        let inventory = try await controller(runner).inventory()
+
+        #expect(inventory.images.map(\.isUnused) == [true])
+    }
+
     @Test func anImageIsInUseWhenAnyTagOfItsIDIs() async throws {
         let runner = FakeDocker(answers: [
             "docker image ls -a --format json": ok(

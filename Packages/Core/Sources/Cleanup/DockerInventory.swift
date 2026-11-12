@@ -81,9 +81,7 @@ enum DockerParsers {
         let rows = lines(images).map(image)
         // Docker keeps one image per ID however many tags it has, and `image prune -a` keeps all of them while any
         // container runs from one of the tags, so use is decided per ID.
-        let used = rows.filter { row in
-            containers.contains { row.names.contains($0.image) || shortID($0.image) == row.image.id }
-        }
+        let used = rows.filter { row in containers.contains { uses($0.image, row) } }
         let usedIDs = Set(used.map(\.image.id))
         let images = rows.map { row in
             DockerImage(
@@ -99,16 +97,40 @@ enum DockerParsers {
             buildCacheSize: sizes["Build Cache"] ?? 0)
     }
 
-    /// An image and the names a container may call it by: `repository:tag`, the bare repository (which means
-    /// `latest`) or the ID.
-    private static func image(_ row: [String: Any]) -> (image: DockerImage, names: Set<String>) {
+    /// Whether a container whose image is `reference` runs from `row`. A container started from an image pinned by
+    /// digest names it `repository@sha256:…` or `repository:tag@sha256:…`. That digest is the registry's, not the ID,
+    /// and the image may be listed under any tag of the repository, so without a tag every image of the repository
+    /// counts as used: one shown as unused that is not would be the worse mistake.
+    private static func uses(_ reference: String, _ row: ImageRow) -> Bool {
+        if row.names.contains(reference) || shortID(reference) == row.image.id { return true }
+        let parts = reference.split(separator: "@", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return false }
+        if row.digest == parts[1] { return true }
+        // A colon after the last slash starts the tag; one before it ends the port of a registry.
+        let hasTag = parts[0].split(separator: "/").last?.contains(":") == true
+        return hasTag ? row.names.contains(parts[0]) : row.repository == parts[0]
+    }
+
+    /// An image as `docker image ls` lists it, and what a container may call it by.
+    private struct ImageRow {
+        let image: DockerImage
+        let repository: String
+        /// `repository:tag`, the bare repository (which means `latest`, or that the image has no tag) and the ID.
+        let names: Set<String>
+        /// The registry digest, when Docker lists one.
+        let digest: String?
+    }
+
+    private static func image(_ row: [String: Any]) -> ImageRow {
         let id = shortID(row["ID"] as? String ?? "")
         let repository = row["Repository"] as? String ?? ""
         let tag = row["Tag"] as? String ?? ""
         let name = repository == "<none>" ? id : tag == "<none>" ? repository : "\(repository):\(tag)"
         let image = DockerImage(
             id: id, name: name, size: DockerSize.bytes(row["Size"] as? String ?? "") ?? 0, isUnused: true)
-        return (image, [name, tag == "latest" ? repository : "", id])
+        return ImageRow(
+            image: image, repository: repository, names: Set([name, id] + (tag == "latest" ? [repository] : [])),
+            digest: (row["Digest"] as? String).flatMap { $0.hasPrefix("sha256:") ? $0 : nil })
     }
 
     private static func container(_ row: [String: Any]) -> DockerContainer {
