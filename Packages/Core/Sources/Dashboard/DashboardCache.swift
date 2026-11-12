@@ -2,9 +2,10 @@ import CoreModels
 import Foundation
 
 /// What the dashboard keeps from one run to the next, so that the window has something to show before the scan of the
-/// disk is through: the repositories that were found, and the sizes that were measured.
+/// disk is through: the repositories that were found, and the sizes that were measured, of the worktrees and of what
+/// the Caches and Docker page shows.
 ///
-/// It holds paths and sizes and nothing else: no remote, no host, no branch. A remote can carry a token
+/// It holds paths, ids and sizes and nothing else: no remote, no host, no branch. A remote can carry a token
 /// (`https://user:token@host/...`), and a file in Application Support is no place for one.
 public struct DashboardCache: Sendable {
     public struct Contents: Sendable, Equatable, Codable {
@@ -12,10 +13,25 @@ public struct DashboardCache: Sendable {
         public var repositories: [String]
         /// By the canonical path of a worktree.
         public var sizes: [String: SizeInfo]
+        /// What the Caches and Docker page measured, by the key of `CleanupState.sizes`: the id of a cache, the path of
+        /// a build output, or `CleanupState.dockerDiskKey`. A file written before the page existed has none.
+        public var cleanupSizes: [String: SizeInfo]
 
-        public init(repositories: [String] = [], sizes: [String: SizeInfo] = [:]) {
+        public init(
+            repositories: [String] = [], sizes: [String: SizeInfo] = [:], cleanupSizes: [String: SizeInfo] = [:]
+        ) {
             self.repositories = repositories
             self.sizes = sizes
+            self.cleanupSizes = cleanupSizes
+        }
+
+        private enum CodingKeys: String, CodingKey { case repositories, sizes, cleanupSizes }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            repositories = try container.decode([String].self, forKey: .repositories)
+            sizes = try container.decode([String: SizeInfo].self, forKey: .sizes)
+            cleanupSizes = try container.decodeIfPresent([String: SizeInfo].self, forKey: .cleanupSizes) ?? [:]
         }
     }
 
@@ -45,7 +61,7 @@ public struct DashboardCache: Sendable {
         else { return Contents() }
         return Contents(
             repositories: file.contents.repositories.filter { $0.hasPrefix("/") },
-            sizes: file.contents.sizes.filter { $0.key.hasPrefix("/") })
+            sizes: file.contents.sizes.filter { $0.key.hasPrefix("/") }, cleanupSizes: file.contents.cleanupSizes)
     }
 
     /// Replaces what the file holds, making its folder if there is none. The file is replaced as a whole, so a reader

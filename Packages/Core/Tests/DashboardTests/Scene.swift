@@ -1,3 +1,4 @@
+import Cleanup
 import CoreModels
 @testable import Dashboard
 import Discovery
@@ -49,6 +50,9 @@ final class Scene {
     let signaler: FakeSignaler
     let remover = FakeRemover()
     let watcher = FakeWatcher()
+    let docker = FakeDockerControl()
+    let caches = FakeCaches()
+    let buildOutputs = FakeBuildOutputs()
     let clock = FakeClock()
     let folder: TempDir
     let settings: SettingsStore
@@ -86,8 +90,8 @@ final class Scene {
         let systemMemory = self.systemMemory
         var env = DashboardEnvironment(
             scanner: scanner, git: git, reviews: reviews ?? self.reviews, hosting: hosting ?? self.hosting,
-            sizes: sizes, sampler: sampler, signaler: signaler, remover: remover, watcher: watcher, cache: cache,
-            settings: settings, now: { [date] in date.now },
+            sizes: sizes, sampler: sampler, signaler: signaler, remover: remover, watcher: watcher, docker: docker,
+            caches: caches, buildOutputs: buildOutputs, cache: cache, settings: settings, now: { [date] in date.now },
             sleep: { try await clock.sleep(for: $0) })
         env.stopTimeout = .milliseconds(100)
         env.systemMemory = { systemMemory }

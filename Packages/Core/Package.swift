@@ -25,7 +25,9 @@ let package = Package(
         .target(name: "Cleanup", dependencies: ["CoreModels", "Shell", "DiskUsage"], swiftSettings: strict),
         .target(
             name: "Dashboard",
-            dependencies: ["CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety"],
+            dependencies: [
+                "CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety", "Cleanup",
+            ],
             swiftSettings: strict),
         .target(name: "AppShell", dependencies: ["CoreModels", "Dashboard", "Hosting", "Safety"], swiftSettings: strict),
         // Helpers shared by the test targets: temporary folders, real git repositories to run tests against, and
@@ -60,7 +62,7 @@ let package = Package(
             name: "DashboardTests",
             dependencies: [
                 "Dashboard", "CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit",
-                "Safety", "TestSupport",
+                "Safety", "Cleanup", "TestSupport",
             ],
             swiftSettings: strict),
     ]

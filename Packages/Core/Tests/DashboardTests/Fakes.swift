@@ -1,3 +1,4 @@
+import Cleanup
 import CoreModels
 import Dashboard
 import Discovery
@@ -484,6 +485,166 @@ final class FakeRemover: WorktreeRemoving {
         try await prune(repo.path)
     }
 }
+
+// MARK: Cleanup
+
+/// Docker as a stand-in: the statuses that the test lists, one per call and the last one from then on, and what the VM
+/// holds. Nothing is started and nothing is pruned.
+final class FakeDockerControl: DockerControlling {
+    enum Call: Equatable, Sendable { case status, inventory, start, removeImages, removeContainers }
+
+    private struct State {
+        var statuses: [DockerStatus]
+        var inventory: DockerInventory?
+        var startError: DockerError?
+        var pruneError: DockerError?
+        var calls: [Call] = []
+    }
+
+    private let state: Mutex<State>
+
+    init(_ statuses: [DockerStatus] = [.notInstalled], inventory: DockerInventory? = nil) {
+        state = Mutex(State(statuses: statuses, inventory: inventory))
+    }
+
+    var calls: [Call] { state.withLock { $0.calls } }
+    func count(_ call: Call) -> Int { calls.filter { $0 == call }.count }
+    /// From the next call on, `status()` answers these, in order, and then the last one.
+    func willAnswer(_ statuses: [DockerStatus]) { state.withLock { $0.statuses = statuses } }
+    func willHold(_ inventory: DockerInventory?) { state.withLock { $0.inventory = inventory } }
+    func failStart(_ error: DockerError?) { state.withLock { $0.startError = error } }
+    func failPrunes(_ error: DockerError?) { state.withLock { $0.pruneError = error } }
+
+    func status() async -> DockerStatus {
+        state.withLock { state in
+            state.calls.append(.status)
+            return state.statuses.count > 1 ? state.statuses.removeFirst() : state.statuses[0]
+        }
+    }
+
+    func inventory() async throws -> DockerInventory {
+        try state.withLock { state in
+            state.calls.append(.inventory)
+            guard let inventory = state.inventory else {
+                throw DockerError(message: "Cannot connect to the Docker daemon")
+            }
+            return inventory
+        }
+    }
+
+    func start(_ runtime: DockerRuntime) async throws {
+        try state.withLock { state in
+            state.calls.append(.start)
+            if let error = state.startError { throw error }
+        }
+    }
+
+    func removeUnusedImages() async throws -> UInt64 {
+        try state.withLock { state in
+            state.calls.append(.removeImages)
+            if let error = state.pruneError { throw error }
+            return 0
+        }
+    }
+
+    func removeStoppedContainers() async throws -> UInt64 {
+        try state.withLock { state in
+            state.calls.append(.removeContainers)
+            if let error = state.pruneError { throw error }
+            return 0
+        }
+    }
+}
+
+/// The caches that the test lists. Cleaning one cleans nothing: it notes the entry, waits at `gate` if there is one,
+/// and throws what the test said for its id.
+final class FakeCaches: CacheCataloging {
+    private struct State {
+        var entries: [CacheEntry] = []
+        var errors: [String: any Error] = [:]
+        var asked: [Int] = []
+        var cleaned: [String] = []
+        var cleanedOnMain = false
+        var gate: Gate?
+    }
+
+    private let state = Mutex(State())
+
+    func set(_ entries: [CacheEntry]) { state.withLock { $0.entries = entries } }
+    func fail(_ id: String, with error: (any Error)?) { state.withLock { $0.errors[id] = error } }
+    /// Cleans wait here until the test opens it.
+    func hold(at gate: Gate?) { state.withLock { $0.gate = gate } }
+    /// What `entries` was told of the projects that use pnpm, call by call.
+    var projectsUsingPnpm: [Int] { state.withLock { $0.asked } }
+    var cleaned: [String] { state.withLock { $0.cleaned } }
+    var cleanedOnMain: Bool { state.withLock { $0.cleanedOnMain } }
+
+    func entries(projectsUsingPnpm: Int) async -> [CacheEntry] {
+        state.withLock { state in
+            state.asked.append(projectsUsingPnpm)
+            return state.entries
+        }
+    }
+
+    func clean(_ entry: CacheEntry) async throws {
+        let onMain = isMainThread()
+        let gate = state.withLock { state in
+            state.cleaned.append(entry.id)
+            state.cleanedOnMain = state.cleanedOnMain || onMain
+            return state.gate
+        }
+        await gate?.wait()
+        if let error = state.withLock({ $0.errors[entry.id] }) { throw error }
+    }
+}
+
+/// The build outputs that the test lists, by worktree. Deleting one deletes nothing on the disk: it leaves the list,
+/// unless the test said it fails.
+final class FakeBuildOutputs: BuildOutputFinding {
+    private struct State {
+        var outputs: [BuildOutput] = []
+        var errors: [String: any Error] = [:]
+        var asked: [[String]] = []
+        var deleted: [String] = []
+        var deletedOnMain = false
+        var gate: Gate?
+    }
+
+    private let state = Mutex(State())
+
+    func set(_ outputs: [BuildOutput]) { state.withLock { $0.outputs = outputs } }
+    func fail(_ path: String, with error: (any Error)?) { state.withLock { $0.errors[path] = error } }
+    func hold(at gate: Gate?) { state.withLock { $0.gate = gate } }
+    /// The worktrees of each `find`, in order.
+    var asked: [[String]] { state.withLock { $0.asked } }
+    var deleted: [String] { state.withLock { $0.deleted } }
+    var deletedOnMain: Bool { state.withLock { $0.deletedOnMain } }
+
+    func find(in worktrees: [String]) async -> [BuildOutput] {
+        state.withLock { state in
+            state.asked.append(worktrees)
+            return state.outputs.filter { worktrees.contains($0.worktree) }
+        }
+    }
+
+    func delete(_ output: BuildOutput) async throws {
+        let onMain = isMainThread()
+        let gate = state.withLock { state in
+            state.deleted.append(output.path)
+            state.deletedOnMain = state.deletedOnMain || onMain
+            return state.gate
+        }
+        await gate?.wait()
+        try state.withLock { state in
+            if let error = state.errors[output.path] { throw error }
+            state.outputs.removeAll { $0.path == output.path }
+        }
+    }
+}
+
+/// Whether the caller runs on the main thread. A function of its own, as `Thread.isMainThread` cannot be asked from an
+/// async context.
+func isMainThread() -> Bool { Thread.isMainThread }
 
 // MARK: Accounts
 

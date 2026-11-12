@@ -1,3 +1,4 @@
+import Cleanup
 import CoreModels
 import Discovery
 import Foundation
@@ -57,6 +58,13 @@ struct Repository {
     /// The processes that are being stopped (`stop(_:of:)`), by the pid of the leader of their group: the window
     /// offers no second stop for them, and shows that it is under way.
     public internal(set) var stopping: Set<Int32> = []
+    /// What the Caches and Docker page shows. A property of its own: nothing that the worktrees or the processes do
+    /// sets it, so the page is not drawn again for a sample or a worktree's size, and the Projects page is not drawn
+    /// again for a cache's size.
+    public internal(set) var cleanup = CleanupState()
+    /// What runs in each worktree, by its path, from the last sample. Set only when a sample finds something new, so a
+    /// view that reads it (whether a build output is in use) is drawn again for that and for nothing else.
+    public private(set) var groups: [String: [ProcessGroup]] = [:]
     /// Whether the user has been through the first-run window. Until then the store reads nothing, samples nothing and
     /// asks no host: `start()`, `refresh()`, `fetchAll()` and `refreshReviews(host:)` do nothing, and the processes are
     /// not sampled. `completeOnboarding()` ends it.
@@ -87,8 +95,6 @@ struct Repository {
     @ObservationIgnored let env: DashboardEnvironment
     @ObservationIgnored let reader: Reader
     @ObservationIgnored var repositories: [String: Repository] = [:]
-    /// What runs in each worktree, by its path, from the last sample.
-    @ObservationIgnored var groups: [String: [ProcessGroup]] = [:]
     @ObservationIgnored var sizes: [String: SizeInfo] = [:]
     @ObservationIgnored var measuredAt: [String: Date] = [:]
     @ObservationIgnored var staleSizes: Set<String> = []
@@ -119,6 +125,12 @@ struct Repository {
     @ObservationIgnored let cacheWriter: CacheWriter
     @ObservationIgnored var cacheVersion = 0
     @ObservationIgnored var pendingCacheWrites = 0
+    /// The sizes of the Caches and Docker page, with when each was measured, by the key of `CleanupState.sizes`.
+    @ObservationIgnored var cleanupSizes: [String: SizeInfo] = [:]
+    /// The folders that each key of `cleanupSizes` stands for, as the last load found them.
+    @ObservationIgnored var cleanupTargets: [String: [String]] = [:]
+    @ObservationIgnored var cleanupQueue: [String] = []
+    @ObservationIgnored var cleanupWorker: Task<Void, Never>?
 
     public init(env: DashboardEnvironment) {
         self.env = env
@@ -133,6 +145,7 @@ struct Repository {
         pollTask?.cancel()
         sizeWorker?.cancel()
         eventWorker?.cancel()
+        cleanupWorker?.cancel()
     }
 
     // MARK: Public operations
@@ -172,17 +185,7 @@ struct Repository {
         hasStarted = true
         isStarting = true
         defer { isStarting = false }
-        let hidden = env.settings.hiddenRepos
-        if !cacheLoaded {
-            cacheLoaded = true
-            let cached = env.cache.load()
-            sizes = cached.sizes
-            measuredAt = cached.sizes.mapValues(\.computedAt)
-            for path in cached.repositories where !hidden.contains(path) && repositories[path] == nil {
-                repositories[path] = Repository(path: path)
-            }
-            publish()
-        }
+        loadCacheIfNeeded()
 
         let rules = env.settings.rules
         roots = env.scanner.defaultRoots(rules: rules)
@@ -263,6 +266,23 @@ struct Repository {
         publish()
         updateWorktreeWatch()
         saveCache()
+    }
+
+    /// Takes what the cache holds, the first time it is asked for in this run of the app: by `start()`, or by
+    /// `loadCleanup()` if the page is opened first. Either way the cache is read before anything writes it, so a write
+    /// never loses the sizes of the other.
+    func loadCacheIfNeeded() {
+        guard !cacheLoaded else { return }
+        cacheLoaded = true
+        let cached = env.cache.load()
+        let hidden = env.settings.hiddenRepos
+        sizes = cached.sizes
+        measuredAt = cached.sizes.mapValues(\.computedAt)
+        cleanupSizes = cached.cleanupSizes
+        for path in cached.repositories where !hidden.contains(path) && repositories[path] == nil {
+            repositories[path] = Repository(path: path)
+        }
+        publish()
     }
 
     // MARK: Reading
@@ -435,9 +455,10 @@ struct Repository {
     }
 
     /// Whether nothing that the store started on its own is still going: no watcher event on its way or being
-    /// handled, no size being measured, no cache being written, no start. For tests.
+    /// handled, no size being measured, no cache being written, no start, no load of the Caches and Docker page. For
+    /// tests.
     var isIdle: Bool {
         eventsReceived.count == eventsHandled && pendingEvents.isEmpty && eventWorker == nil && sizeWorker == nil
-            && pendingCacheWrites == 0 && !isStarting
+            && pendingCacheWrites == 0 && !isStarting && cleanupWorker == nil && !cleanup.isLoading
     }
 }

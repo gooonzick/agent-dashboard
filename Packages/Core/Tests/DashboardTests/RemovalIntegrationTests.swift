@@ -36,7 +36,8 @@ import Testing
             git: OriginOnAHost(GitReader(runner: sandbox.runner)), reviews: reviews, hosting: FakeHosting(),
             sizes: FakeSizes(), sampler: FakeSampler(), signaler: FakeSignaler(),
             remover: WorktreeRemover(runner: sandbox.runner, signaler: FakeSignaler(), sampler: FakeSampler()),
-            watcher: FakeWatcher(), cache: setting.cache, settings: setting.settings)
+            watcher: FakeWatcher(), docker: FakeDockerControl(), caches: FakeCaches(), buildOutputs: FakeBuildOutputs(),
+            cache: setting.cache, settings: setting.settings)
         let store = DashboardStore(env: env)
         await store.start()
         await setting.settle(store)

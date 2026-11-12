@@ -64,9 +64,13 @@ extension DashboardStore {
     /// sheet that removes worktrees, whose sizes the user reads then. One that is being measured is not asked for
     /// twice.
     public func refreshSizes(of paths: [String]) {
-        let due = paths.filter {
-            $0 != sizeInFlight && isMeasurable($0) && isDue($0, after: Self.sizeIntervalOnDemand)
-        }
+        measureNow(paths.filter { $0 != sizeInFlight && isDue($0, after: Self.sizeIntervalOnDemand) })
+    }
+
+    /// Measures the folders of worktrees at `paths` before any other, however new their size: after a build output in
+    /// one was deleted, say. One that is being measured is measured again, as that measure may have begun before.
+    func measureNow(_ paths: [String]) {
+        let due = paths.filter(isMeasurable)
         guard !due.isEmpty else { return }
         staleSizes.subtract(due)
         sizeQueue.removeAll { due.contains($0) }
@@ -221,7 +225,8 @@ extension DashboardStore {
     func saveCache() {
         let worktrees = Set(worktreeRoots)
         let contents = DashboardCache.Contents(
-            repositories: repositories.keys.sorted(), sizes: sizes.filter { worktrees.contains($0.key) })
+            repositories: repositories.keys.sorted(), sizes: sizes.filter { worktrees.contains($0.key) },
+            cleanupSizes: cleanupSizes)
         cacheVersion += 1
         let (version, writer) = (cacheVersion, cacheWriter)
         pendingCacheWrites += 1
