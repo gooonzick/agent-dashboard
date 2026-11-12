@@ -209,7 +209,7 @@ struct MainView: View {
                 .searchable(text: $query, prompt: searchPrompt)
                 .searchFocused($searchIsFocused)
                 .toolbar { toolbar }
-                .inspector(isPresented: $showsInspector) {
+                .inspector(isPresented: inspectorIsShown) {
                     Group {
                         if let row = selectedRow {
                             WorktreeInspector(row: row, actions: rowActions)
@@ -338,6 +338,14 @@ struct MainView: View {
         guard !new.isEmpty else { return }
         expanded.formUnion(sections.prefix(2).map(\.id).filter(new.contains))
         metSections.formUnion(new)
+    }
+
+    /// `showsInspector` as the page has it: the column stays away on a page without worktrees, and the setting stays as
+    /// the user left it for the others.
+    private var inspectorIsShown: Binding<Bool> {
+        Binding(
+            get: { SidebarItem.showsInspector(showsInspector, on: sidebar) },
+            set: { showsInspector = SidebarItem.inspectorSetting(showsInspector, shown: $0, on: sidebar) })
     }
 
     /// The worktree that the inspector shows and Remove… acts on; none on a page without worktrees.
@@ -525,9 +533,12 @@ struct MainView: View {
                     .disabled(isBusy || scanState.isScanning)
             }
         }
-        ToolbarItem {
-            Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }
-                .help("Inspector")
+        // A page without worktrees has no inspector to show.
+        if (sidebar ?? .projects).showsWorktrees {
+            ToolbarItem {
+                Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }
+                    .help("Inspector")
+            }
         }
     }
 }

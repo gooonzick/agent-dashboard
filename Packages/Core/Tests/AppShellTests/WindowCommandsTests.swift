@@ -37,6 +37,19 @@ import Testing
         #expect(SidebarItem.repository("/Users/me/Development/dashboard").showsWorktrees)
     }
 
+    @Test func theCachesPageHasNoInspectorColumnAndKeepsTheSetting() {
+        #expect(!SidebarItem.showsInspector(true, on: .caches))
+        #expect(SidebarItem.showsInspector(true, on: .projects))
+        #expect(SidebarItem.showsInspector(true, on: .processes))
+        #expect(SidebarItem.showsInspector(true, on: nil))
+        #expect(!SidebarItem.showsInspector(false, on: .projects))
+        // Closed or opened on Caches, the setting the other pages use is what it was.
+        #expect(SidebarItem.inspectorSetting(true, shown: false, on: .caches))
+        #expect(!SidebarItem.inspectorSetting(false, shown: true, on: .caches))
+        #expect(!SidebarItem.inspectorSetting(true, shown: false, on: .projects))
+        #expect(SidebarItem.inspectorSetting(false, shown: true, on: .readyToRemove))
+    }
+
     @Test func nothingThatChangesTheRowsIsOfferedWhileTheSheetIsOpen() {
         #expect(!WindowCommands.offersRemove(selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: true))
         #expect(!WindowCommands.offersRefresh(isBusy: false, isScanning: false, sheetIsOpen: true))

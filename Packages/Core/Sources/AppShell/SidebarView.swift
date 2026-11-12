@@ -15,6 +15,18 @@ enum SidebarItem: Hashable {
     /// shows none (Ruling 13): a selection carried over from Projects would put a worktree's Remove and Stop on a page
     /// that is about caches.
     var showsWorktrees: Bool { self != .caches }
+
+    /// Whether the inspector column is shown on `page` when the user's setting is `setting`: never on a page that shows
+    /// no worktree, where it would stand empty.
+    static func showsInspector(_ setting: Bool, on page: SidebarItem?) -> Bool {
+        setting && (page ?? .projects).showsWorktrees
+    }
+
+    /// The setting once the inspector column on `page` was set to `shown`. Where the column is never shown, the setting
+    /// stays as it was, for the pages that show it.
+    static func inspectorSetting(_ setting: Bool, shown: Bool, on page: SidebarItem?) -> Bool {
+        (page ?? .projects).showsWorktrees ? shown : setting
+    }
 }
 
 /// The startup disk, as the foot of the sidebar shows it.
