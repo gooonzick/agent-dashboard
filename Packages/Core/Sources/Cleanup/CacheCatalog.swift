@@ -246,7 +246,8 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
     /// The folder that holds `store` and the stores of other versions, resolved, when it lies inside home and no link
     /// below home leads to it; `nil` otherwise. Unlike the other caches its place is whatever pnpm says, so the part
     /// below home is taken from that path and has to resolve to itself under the resolved home: a link at
-    /// `~/Library/pnpm` or at the folder of the stores leads somewhere else, and that must not pass as being the stores.
+    /// `~/Library/pnpm` or at the folder of the stores leads somewhere else, and that must not pass as being the
+    /// stores.
     private func storesFolder(of store: String) -> String? {
         let root = (store as NSString).deletingLastPathComponent
         guard let resolvedRoot = Self.resolved(root), let resolvedHome = Self.resolved(home.path) else { return nil }
