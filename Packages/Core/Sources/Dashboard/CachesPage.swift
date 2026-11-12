@@ -217,7 +217,9 @@ public struct DockerSection: Equatable, Sendable {
             DockerRow(
                 id: CleanupState.unusedImagesID, title: "Images",
                 detail: "\(images) · \(CachesPresenter.disk(imageBytes))", note: unused, action: "Remove Unused…",
-                disabledReason: unusedImages.isEmpty ? "No unused images" : nil, state: state),
+                disabledReason: Self.imagesReason(
+                    images: inventory.images, unused: unusedImages, stopped: stoppedContainers),
+                state: state),
             DockerRow(
                 id: CleanupState.stoppedContainersID, title: "Containers",
                 detail: "\(running) running, \(stoppedContainers.count) stopped", note: nil,
@@ -231,6 +233,17 @@ public struct DockerSection: Equatable, Sendable {
                 note: nil, action: nil, disabledReason: nil, state: state),
         ]
         containers = inventory.containers.map(DockerContainerLine.init)
+    }
+}
+
+extension DockerSection {
+    /// Why "Remove Unused…" is off, said in the row: Docker keeps an image that any container has, even a stopped one,
+    /// so the count of those is said too. `nil` when there are unused images.
+    static func imagesReason(images: [DockerImage], unused: [DockerImage], stopped: [DockerContainer]) -> String? {
+        guard unused.isEmpty else { return nil }
+        if images.isEmpty { return "No images" }
+        return stopped.isEmpty
+            ? "All in use by containers" : "All in use by containers, \(stopped.count) of them stopped"
     }
 }
 

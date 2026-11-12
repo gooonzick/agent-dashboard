@@ -302,8 +302,21 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         #expect(
             clean.docker.rows.map(\.detail) == ["1 image · 0.4 GB", "0 running, 0 stopped", "< 0.1 GB", "< 0.1 GB"])
         #expect(clean.docker.rows[0].isEnabled == false)
-        #expect(clean.docker.rows[0].disabledReason == "No unused images")
+        #expect(clean.docker.rows[0].disabledReason == "All in use by containers")
         #expect(clean.docker.rows[1].disabledReason == "No stopped containers")
+
+        // A stopped container still holds its image, which is easy to miss.
+        let used = DockerInventory(
+            images: [someInventory.images[0]], containers: someInventory.containers, volumesSize: 0, buildCacheSize: 0)
+        let stopped = CachesPage(
+            state: CleanupState(docker: colima(running: true), inventory: used), users: [:], home: home)
+        #expect(stopped.docker.rows[0].disabledReason == "All in use by containers, 1 of them stopped")
+        #expect(stopped.docker.rows[1].disabledReason == nil)
+
+        let none = DockerInventory(images: [], containers: [], volumesSize: 0, buildCacheSize: 0)
+        let bare = CachesPage(
+            state: CleanupState(docker: colima(running: true), inventory: none), users: [:], home: home)
+        #expect(bare.docker.rows[0].disabledReason == "No images")
     }
 
     @Test func queryFiltersRowsByTitleAndPath() {

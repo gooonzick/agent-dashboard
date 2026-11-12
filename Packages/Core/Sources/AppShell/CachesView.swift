@@ -441,6 +441,10 @@ private struct DockerRowView: View {
             Text(row.detail).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 12)
             if let note = row.note { StateChipView(chip: StateChip(text: note, warning: false)) }
+            // Said in the row, not only in the help: why an image a stopped container has is not unused is not obvious.
+            if !row.isWorking, let reason = row.disabledReason {
+                Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
             if let action = row.action {
                 ActionButton(
                     title: action, isEnabled: row.isEnabled, isWorking: row.isWorking, help: row.disabledReason,
