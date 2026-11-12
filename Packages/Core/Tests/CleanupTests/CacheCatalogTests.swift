@@ -302,6 +302,108 @@ struct CacheCatalogTests {
         #expect(FileManager.default.fileExists(atPath: outside.url.appending(path: "keep.txt").path))
     }
 
+    @Test func aForgedCommandIsNotRun() async throws {
+        let machine = try Machine()
+        let runner = FakeDocker(installed: machine.tools.union(["rm"]), answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let forged = [
+            CacheEntry(
+                id: "x", group: .packages, title: "x", paths: [], note: nil, action: "Clean",
+                clean: .command(tool: "rm", args: ["-rf", machine.home.path])),
+            CacheEntry(
+                id: "homebrew", group: .packages, title: "x", paths: [], note: nil, action: "Clean",
+                clean: .command(tool: "rm", args: ["-rf", machine.home.path])),
+        ]
+
+        for entry in forged {
+            await #expect(throws: CleanupError.notEligible(entry.id)) { try await catalog.clean(entry) }
+        }
+
+        #expect(runner.calls.allSatisfy { !$0.line.hasPrefix("rm") })
+    }
+
+    @Test func anOldStoreThatHoldsTheCurrentOneIsNotDeleted() async throws {
+        let machine = try Machine()
+        // v11, the current store, is a symlink into v10: deleting v10 would delete the live store.
+        let inner = machine.oldStore + "/inner"
+        try FileManager.default.createDirectory(atPath: inner, withIntermediateDirectories: true)
+        try FileManager.default.removeItem(atPath: machine.store)
+        try FileManager.default.createSymbolicLink(atPath: machine.store, withDestinationPath: inner)
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let forged = CacheEntry(
+            id: "pnpm-old", group: .packages, title: "Old pnpm stores", paths: [machine.oldStore], note: nil,
+            action: "Clean", clean: .deleteFolders([machine.oldStore]))
+
+        await #expect(throws: CleanupError.notEligible(machine.oldStore)) {
+            try await machine.catalog(runner).clean(forged)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: inner))
+    }
+
+    @Test func aFolderThatIsTheFolderOfTheStoresItselfIsNotDeleted() async throws {
+        let machine = try Machine()
+        let stores = machine.path("Library/pnpm/store")
+        let renamed = machine.path("Library/pnpm/v12")
+        try FileManager.default.moveItem(atPath: stores, toPath: renamed)
+        try FileManager.default.createSymbolicLink(atPath: stores, withDestinationPath: renamed)
+        var answers = try machine.answers()
+        answers["pnpm store path"] = ok(renamed + "/v11\n")
+        let runner = FakeDocker(installed: machine.tools, answers: answers)
+        // Named like a store, and resolving to the folder that holds them.
+        let link = machine.path("Library/pnpm/store/v7")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: renamed)
+        let forged = CacheEntry(
+            id: "pnpm-old", group: .packages, title: "Old pnpm stores", paths: [link], note: nil, action: "Clean",
+            clean: .deleteFolders([link]))
+
+        await #expect(throws: CleanupError.notEligible(link)) { try await machine.catalog(runner).clean(forged) }
+
+        #expect(FileManager.default.fileExists(atPath: renamed + "/v11"))
+    }
+
+    @Test func aPathThatCannotBeResolvedIsNotDeleted() async throws {
+        let machine = try Machine()
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let npm = try #require(await catalog.entries(projectsUsingPnpm: 0).first { $0.id == "npm" })
+        try FileManager.default.removeItem(atPath: machine.path(".npm/_cacache"))
+
+        await #expect(throws: CleanupError.pathEscapes(machine.path(".npm/_cacache"))) { try await catalog.clean(npm) }
+    }
+
+    @Test func aDeleteThatFailsIsReportedAsFailed() async throws {
+        let machine = try Machine()
+        let cache = machine.path(".npm/_cacache")
+        let locked = cache + "/locked"
+        try FileManager.default.createDirectory(atPath: locked, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: URL(filePath: locked + "/f"))
+        // A folder that cannot be written to keeps its files from being removed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked) }
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let npm = try #require(await catalog.entries(projectsUsingPnpm: 0).first { $0.id == "npm" })
+
+        do {
+            try await catalog.clean(npm)
+            Issue.record("clean did not throw")
+        } catch let error as CleanupError {
+            if case .failed = error {} else { Issue.record("wrong error: \(error)") }
+        }
+    }
+
+    @Test func pnpmStorePathIsTheLastLineOfItsOutput() async throws {
+        let machine = try Machine()
+        var answers = try machine.answers()
+        answers["pnpm store path"] = ok("WARN something is off\n" + machine.store + "\n\n")
+        let runner = FakeDocker(installed: machine.tools, answers: answers)
+
+        let entries = await machine.catalog(runner).entries(projectsUsingPnpm: 0)
+
+        #expect(entries.first { $0.id == "pnpm" }?.paths == [machine.store])
+    }
+
     @Test func aFailedCommandSaysWhatTheToolSaid() async throws {
         let machine = try Machine()
         var answers = try machine.answers()

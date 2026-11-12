@@ -144,16 +144,27 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
         return entries
     }
 
+    /// Cleaning is partial when it stops half way: what was deleted before an error stays deleted, which is fine for a
+    /// cache. The paths are resolved and checked right before, and the deletes go through the resolved paths; a
+    /// symlink swapped in between the check and the delete is a window that stays open, accepted for a tool that one
+    /// person runs on their own machine.
     public func clean(_ entry: CacheEntry) async throws {
         guard let clean = entry.clean else { throw CleanupError.notEligible(entry.id) }
         switch clean {
         case .command(let tool, let args):
+            // What runs is fixed by the id, not read from the entry, so an entry that was altered cannot run anything
+            // else.
+            guard Self.expectedCommand(of: entry.id) == clean else { throw CleanupError.notEligible(entry.id) }
             try await run(tool, args)
         case .deleteContents(let folder):
             guard let root = expectedRoot(of: entry.id) else { throw CleanupError.notEligible(entry.id) }
-            try check(folder, within: root)
-            for child in try fileManager.contentsOfDirectory(atPath: folder) {
-                try fileManager.removeItem(atPath: folder + "/" + child)
+            let target = try check(folder, within: root)
+            do {
+                for child in try fileManager.contentsOfDirectory(atPath: target) {
+                    try fileManager.removeItem(atPath: target + "/" + child)
+                }
+            } catch {
+                throw CleanupError.failed(error.localizedDescription)
             }
         case .deleteFolders(let folders):
             guard entry.id == "pnpm-old" else { throw CleanupError.notEligible(entry.id) }
@@ -161,15 +172,23 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
             let root = (store as NSString).deletingLastPathComponent
             let current = canonicalPath(store)
             // Everything is checked before the first folder goes, so a bad one leaves all of them in place.
+            var targets: [String] = []
             for folder in folders {
-                guard Self.isStoreVersion((folder as NSString).lastPathComponent) else {
-                    throw CleanupError.notEligible(folder)
-                }
-                try check(folder, within: root)
-                let canonical = canonicalPath(folder)
-                if canonical == current || canonical.hasPrefix(current + "/") { throw CleanupError.notEligible(folder) }
+                let target = try check(folder, within: root)
+                // Strictly inside the folder of the stores, named like one, and neither the current store nor a
+                // folder that holds it or lies in it (the current store may itself be a symlink into an old one).
+                guard Self.isStoreVersion((target as NSString).lastPathComponent),
+                    Self.isStoreVersion((folder as NSString).lastPathComponent),
+                    (target as NSString).deletingLastPathComponent == canonicalPath(root),
+                    !Self.isInside(target, current), !Self.isInside(current, target)
+                else { throw CleanupError.notEligible(folder) }
+                targets.append(target)
             }
-            for folder in folders { try fileManager.removeItem(atPath: folder) }
+            do {
+                for target in targets { try fileManager.removeItem(atPath: target) }
+            } catch {
+                throw CleanupError.failed(error.localizedDescription)
+            }
         }
     }
 
@@ -178,6 +197,17 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
     private func exists(_ path: String) -> Bool {
         var isFolder: ObjCBool = false
         return fileManager.fileExists(atPath: path, isDirectory: &isFolder) && isFolder.boolValue
+    }
+
+    /// What each entry that is cleaned by a command runs.
+    private static func expectedCommand(of id: String) -> CacheClean? {
+        switch id {
+        case "pnpm": return .command(tool: "pnpm", args: ["store", "prune"])
+        case "homebrew": return .command(tool: "brew", args: ["cleanup", "--prune=all", "-s"])
+        case "go": return .command(tool: "go", args: ["clean", "-modcache", "-cache"])
+        case "simulators": return .command(tool: "xcrun", args: ["simctl", "delete", "unavailable"])
+        default: return nil
+        }
     }
 
     /// The folder a delete-based entry has to stay inside. It is fixed by the entry, not read from it, so an entry
@@ -193,13 +223,20 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
         }
     }
 
-    /// Refuses unless `path` as the file system resolves it equals `root` or lies inside it, and lies inside `home`.
-    /// A symlink anywhere on the way that leads out makes the resolved path leave, and so is refused.
-    private func check(_ path: String, within root: String) throws {
-        let target = canonicalPath(path)
-        guard Self.isInside(target, canonicalPath(root)), Self.isInside(target, canonicalPath(home.path)) else {
-            throw CleanupError.pathEscapes(path)
-        }
+    /// `path` as the file system resolves it, when it equals `root` or lies inside it and lies inside `home`; refuses
+    /// otherwise. A symlink anywhere on the way that leads out makes the resolved path leave, and a path that cannot
+    /// be resolved is refused too: a delete does not go ahead on a guess.
+    private func check(_ path: String, within root: String) throws -> String {
+        guard let target = Self.resolved(path), let root = Self.resolved(root), let home = Self.resolved(home.path),
+            Self.isInside(target, root), Self.isInside(target, home)
+        else { throw CleanupError.pathEscapes(path) }
+        return target
+    }
+
+    private static func resolved(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     private static func isInside(_ path: String, _ root: String) -> Bool {
@@ -214,8 +251,9 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
             let result = try? await runner.run("pnpm", ["store", "path"], in: nil, timeout: Self.queryTimeout),
             result.exitCode == 0
         else { return nil }
-        let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : path
+        // pnpm may print a warning before the path.
+        let line = result.stdout.split(whereSeparator: \.isNewline).last { !$0.allSatisfy(\.isWhitespace) }
+        return line.map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     /// `v` and digits: the folders pnpm names after the version of its store.
