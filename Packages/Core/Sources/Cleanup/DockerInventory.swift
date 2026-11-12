@@ -8,6 +8,13 @@ public struct DockerImage: Sendable, Equatable, Identifiable {
     public let size: UInt64
     /// No container, running or stopped, was made from it, so `docker image prune -a` removes it.
     public let isUnused: Bool
+
+    public init(id: String, name: String, size: UInt64, isUnused: Bool) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.isUnused = isUnused
+    }
 }
 
 /// A container of the Docker VM, running or not.
@@ -20,6 +27,15 @@ public struct DockerContainer: Sendable, Equatable, Identifiable {
     public let size: UInt64
     /// The folder of the compose project that made the container, from its `working_dir` label.
     public let project: String?
+
+    public init(id: String, name: String, image: String, isRunning: Bool, size: UInt64, project: String?) {
+        self.id = id
+        self.name = name
+        self.image = image
+        self.isRunning = isRunning
+        self.size = size
+        self.project = project
+    }
 }
 
 /// What a Docker VM holds, as far as the page shows it.
@@ -28,6 +44,13 @@ public struct DockerInventory: Sendable, Equatable {
     public let containers: [DockerContainer]
     public let volumesSize: UInt64
     public let buildCacheSize: UInt64
+
+    public init(images: [DockerImage], containers: [DockerContainer], volumesSize: UInt64, buildCacheSize: UInt64) {
+        self.images = images
+        self.containers = containers
+        self.volumesSize = volumesSize
+        self.buildCacheSize = buildCacheSize
+    }
 }
 
 /// The sizes the Docker CLI prints (`5.393GB`, `719MB`, `24.58kB`).
@@ -55,7 +78,18 @@ enum DockerParsers {
 
     static func inventory(images: String, containers: String, usage: String) -> DockerInventory {
         let containers = lines(containers).map(container)
-        let images = lines(images).map { image($0, usedBy: containers) }
+        let rows = lines(images).map(image)
+        // Docker keeps one image per ID however many tags it has, and `image prune -a` keeps all of them while any
+        // container runs from one of the tags, so use is decided per ID.
+        let used = rows.filter { row in
+            containers.contains { row.names.contains($0.image) || shortID($0.image) == row.image.id }
+        }
+        let usedIDs = Set(used.map(\.image.id))
+        let images = rows.map { row in
+            DockerImage(
+                id: row.image.id, name: row.image.name, size: row.image.size,
+                isUnused: !usedIDs.contains(row.image.id))
+        }
         let sizes = Dictionary(
             lines(usage).compactMap { row in
                 (row["Type"] as? String).map { ($0, DockerSize.bytes(row["Size"] as? String ?? "") ?? 0) }
@@ -65,17 +99,16 @@ enum DockerParsers {
             buildCacheSize: sizes["Build Cache"] ?? 0)
     }
 
-    private static func image(_ row: [String: Any], usedBy containers: [DockerContainer]) -> DockerImage {
+    /// An image and the names a container may call it by: `repository:tag`, the bare repository (which means
+    /// `latest`) or the ID.
+    private static func image(_ row: [String: Any]) -> (image: DockerImage, names: Set<String>) {
         let id = shortID(row["ID"] as? String ?? "")
         let repository = row["Repository"] as? String ?? ""
         let tag = row["Tag"] as? String ?? ""
         let name = repository == "<none>" ? id : tag == "<none>" ? repository : "\(repository):\(tag)"
-        // A container names its image by `repository:tag`, by the repository alone (which means `latest`) or by ID,
-        // so the `Containers` column, which is `N/A` here, is not asked.
-        let names: Set<String> = [name, tag == "latest" ? repository : "", id]
-        let isUsed = containers.contains { names.contains($0.image) || shortID($0.image) == id }
-        return DockerImage(
-            id: id, name: name, size: DockerSize.bytes(row["Size"] as? String ?? "") ?? 0, isUnused: !isUsed)
+        let image = DockerImage(
+            id: id, name: name, size: DockerSize.bytes(row["Size"] as? String ?? "") ?? 0, isUnused: true)
+        return (image, [name, tag == "latest" ? repository : "", id])
     }
 
     private static func container(_ row: [String: Any]) -> DockerContainer {

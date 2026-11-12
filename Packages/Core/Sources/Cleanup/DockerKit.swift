@@ -18,6 +18,20 @@ public struct DockerRuntime: Sendable, Equatable {
     public let cpus: Int?
     /// In bytes.
     public let memory: UInt64?
+
+    public init(
+        kind: DockerRuntimeKind, context: String, profile: String?, isRunning: Bool, diskPath: String?,
+        diskLimit: UInt64?, cpus: Int?, memory: UInt64?
+    ) {
+        self.kind = kind
+        self.context = context
+        self.profile = profile
+        self.isRunning = isRunning
+        self.diskPath = diskPath
+        self.diskLimit = diskLimit
+        self.cpus = cpus
+        self.memory = memory
+    }
 }
 
 public enum DockerStatus: Sendable, Equatable {
@@ -25,6 +39,9 @@ public enum DockerStatus: Sendable, Equatable {
     case notInstalled
     /// The context exists, but it is not colima, Docker Desktop or OrbStack.
     case unknownContext(String)
+    /// `docker context show` or `docker context inspect` failed, so there is no telling which runtime this is. The page
+    /// says that Docker did not answer.
+    case notAnswering
     case runtime(DockerRuntime)
 }
 
@@ -41,9 +58,12 @@ public protocol DockerControlling: Sendable {
     func removeStoppedContainers() async throws -> UInt64
 }
 
-/// What a command said when it failed: the first line of its stderr.
+/// What a command said when it failed: the line of its stderr that names the error (colima writes progress lines
+/// before it), or else the first line there is.
 public struct DockerError: Error, Equatable {
     public let message: String
+
+    public init(message: String) { self.message = message }
 }
 
 /// Finds the Docker runtime from the docker context and drives it with the `docker` CLI and the tool of its runtime.
@@ -67,8 +87,9 @@ public struct DockerController: DockerControlling {
 
     public func status() async -> DockerStatus {
         guard runner.which("docker") != nil else { return .notInstalled }
-        let context = await currentContext() ?? ""
-        guard let endpoint = await endpoint(of: context) else { return .unknownContext(context) }
+        guard let context = await currentContext(), let endpoint = await endpoint(of: context) else {
+            return .notAnswering
+        }
         let root = home.path
         if endpoint.hasPrefix("unix://\(root)/.colima/"), endpoint.hasSuffix("/docker.sock") {
             let profile = String(endpoint.dropFirst("unix://\(root)/.colima/".count).dropLast("/docker.sock".count))
@@ -177,7 +198,9 @@ public struct DockerController: DockerControlling {
             throw DockerError(message: "\(slow) did not answer in time")
         }
         guard result.exitCode == 0 else {
-            let line = result.stderr.split(whereSeparator: \.isNewline).first.map(String.init)
+            let lines = result.stderr.split(whereSeparator: \.isNewline).filter { !$0.allSatisfy(\.isWhitespace) }
+            let errorLine = lines.first { ["FATA", "ERRO", "Error", "error"].contains(where: $0.hasPrefix) }
+            let line = (errorLine ?? lines.first).map(String.init)
             throw DockerError(message: line ?? "\(tool) failed with exit code \(result.exitCode)")
         }
         return result.stdout

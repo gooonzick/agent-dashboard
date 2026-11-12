@@ -224,6 +224,32 @@ struct DockerKitTests {
         #expect(inventory.volumesSize == 0 && inventory.buildCacheSize == 0)
     }
 
+    @Test func anImageIsInUseWhenAnyTagOfItsIDIs() async throws {
+        let runner = FakeDocker(answers: [
+            "docker image ls -a --format json": ok(
+                """
+                {"ID":"aaaaaaaaaaaa","Repository":"app","Tag":"1.2","Size":"1GB"}
+                {"ID":"aaaaaaaaaaaa","Repository":"app","Tag":"latest","Size":"1GB"}
+                {"ID":"bbbbbbbbbbbb","Repository":"app","Tag":"1.1","Size":"1GB"}
+                """),
+            "docker ps -a --size --format json": ok(
+                #"{"ID":"1","Image":"app:1.2","Names":"n","State":"running","Size":"0B (virtual 1GB)"}"#),
+            "docker system df --format json": ok(""),
+        ])
+
+        let inventory = try await controller(runner).inventory()
+
+        #expect(inventory.images.map(\.name) == ["app:1.2", "app:latest", "app:1.1"])
+        #expect(inventory.images.map(\.isUnused) == [false, false, true])
+    }
+
+    @Test func aContextThatDockerCannotNameIsNotAnswering() async throws {
+        var answers = try answers(context: "colima", inspect: "context-colima")
+        answers["docker context show"] = CommandResult(exitCode: 1, stdout: "", stderr: "Cannot connect")
+
+        #expect(await controller(FakeDocker(answers: answers)).status() == .notAnswering)
+    }
+
     @Test func aFailedInventoryCommandSaysWhatDockerSaid() async throws {
         let runner = FakeDocker(answers: [:])
 
@@ -235,7 +261,7 @@ struct DockerKitTests {
     @Test func aFailedStartSaysWhatColimaSaid() async throws {
         var answers = try answers(context: "colima", inspect: "context-colima", running: false)
         answers["colima start default"] = CommandResult(
-            exitCode: 1, stdout: "", stderr: "FATA[0001] error starting vm\nmore")
+            exitCode: 1, stdout: "", stderr: "INFO[0000] starting colima\nFATA[0001] error starting vm\nmore")
         let docker = controller(FakeDocker(answers: answers))
         guard case .runtime(let runtime) = await docker.status() else {
             Issue.record("not a runtime")
