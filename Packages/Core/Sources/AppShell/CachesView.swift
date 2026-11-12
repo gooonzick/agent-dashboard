@@ -45,7 +45,7 @@ struct CachesView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Headline(page: page, isMeasured: !state.sizes.isEmpty)
+                        Headline(page: page)
                         SegmentBar(segments: page.bar, colour: Self.colour, size: Self.disk)
                     }
                     HStack(alignment: .top, spacing: 20) {
@@ -102,16 +102,15 @@ struct CachesView: View {
 
 // MARK: Headline
 
-/// `113 GB in caches, toolchains and VMs · about 70 GB can be cleaned safely`; a spinner for the amount while nothing
-/// is measured yet.
+/// `113 GB in caches, toolchains and VMs · about 70 GB can be cleaned safely`; a spinner for the amount while a row is
+/// still to be measured, since a part of the total would read as all of it.
 private struct Headline: View {
     let page: CachesPage
-    let isMeasured: Bool
 
     var body: some View {
         let headline = CachesPresenter.headline(page)
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if isMeasured {
+            if page.isMeasured {
                 Text(headline.total).font(.largeTitle).monospacedDigit()
             } else {
                 ProgressView().controlSize(.small).accessibilityLabel("Measuring")
