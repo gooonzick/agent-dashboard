@@ -8,7 +8,7 @@ import Testing
 @MainActor @Suite struct CleanupSheetTests {
     private static let home = "/Users/me"
 
-    @Test func aCacheThatItsToolCleansShowsItsFoldersAndTheCommand() {
+    @Test func aCacheThatItsToolCleansShowsWhatWasMeasuredAndTheCommand() {
         let go = CacheEntry(
             id: "go", group: .packages, title: "Go modules and build cache",
             paths: ["/Users/me/go/pkg/mod", "/Users/me/Library/Caches/go-build"], note: nil, action: "Clean",
@@ -16,6 +16,8 @@ import Testing
         let model = CleanupSheetModel(CleanupAsk(.cache(go), xcodeIsRunning: { true }), home: Self.home)
         #expect(model.title == "Clean Go modules and build cache?")
         #expect(model.items == ["~/go/pkg/mod", "~/Library/Caches/go-build"])
+        // The tool decides what of the folders goes, so they are not said to go.
+        #expect(model.itemsCaption == "Measured:")
         #expect(model.itemsArePaths)
         #expect(model.command == "go clean -modcache -cache")
         #expect(model.consequence == "Packages are downloaded again when a project needs them.")
@@ -32,6 +34,7 @@ import Testing
             clean: .deleteContents(of: "/Users/me/Library/Developer/Xcode/DerivedData"))
         let running = CleanupSheetModel(CleanupAsk(.cache(derived), xcodeIsRunning: { true }), home: Self.home)
         #expect(running.items == ["~/Library/Developer/Xcode/DerivedData"])
+        #expect(running.itemsCaption == nil)
         #expect(running.command == nil)
         #expect(running.consequence == "Xcode rebuilds what it needs.")
         #expect(running.warning == "Xcode is running; builds in progress may fail.")
@@ -48,6 +51,27 @@ import Testing
         let model = CleanupSheetModel(CleanupAsk(.cache(old)), home: Self.home)
         // What is deleted, not what is measured.
         #expect(model.items == ["~/Library/pnpm/store/v3"])
+        #expect(model.itemsCaption == nil)
+    }
+
+    @Test func pruningAndDeletingUnavailableSimulatorsDoNotSayTheWholeFolderGoes() {
+        let pnpm = CacheEntry(
+            id: "pnpm", group: .packages, title: "pnpm store", paths: ["/Users/me/Library/pnpm/store/v10"],
+            note: "used by 34 projects", action: "Prune", clean: .command(tool: "pnpm", args: ["store", "prune"]))
+        let simulators = CacheEntry(
+            id: "simulators", group: .xcode, title: "Simulators",
+            paths: ["/Users/me/Library/Developer/CoreSimulator/Devices"], note: "3 unavailable",
+            action: "Delete Unavailable", clean: .command(tool: "xcrun", args: ["simctl", "delete", "unavailable"]))
+
+        let prune = CleanupSheetModel(CleanupAsk(.cache(pnpm)), home: Self.home)
+        let delete = CleanupSheetModel(CleanupAsk(.cache(simulators)), home: Self.home)
+
+        #expect(prune.itemsCaption == "Measured:")
+        #expect(prune.items == ["~/Library/pnpm/store/v10"])
+        #expect(prune.command == "pnpm store prune")
+        #expect(delete.itemsCaption == "Measured:")
+        #expect(delete.command == "xcrun simctl delete unavailable")
+        #expect(delete.consequence == "Only simulators whose runtime is no longer installed are deleted.")
     }
 
     @Test func aBuildOutputSaysTheNextBuildMakesItAgain() {

@@ -45,8 +45,12 @@ struct CleanupSheetModel: Equatable {
     let consequence: String
     /// `Xcode is running; builds in progress may fail.`
     let warning: String?
-    /// What goes: the folders, with `~` for the home folder, or the images or containers.
+    /// What goes: the folders, with `~` for the home folder, or the images or containers. For a cache that its tool
+    /// cleans, the folders that were measured: the tool decides what of them goes (`pnpm store prune` keeps the
+    /// packages a project uses), so they are not said to go.
     let items: [String]
+    /// `Measured:` above the folders of a cache that its tool cleans; `nil` when `items` are what goes.
+    let itemsCaption: String?
     /// Whether `items` are paths, which are set in a monospaced font.
     let itemsArePaths: Bool
     /// The command that cleans a cache its tool owns: `pnpm store prune`.
@@ -60,6 +64,7 @@ struct CleanupSheetModel: Equatable {
         func tilde(_ paths: [String]) -> [String] { paths.map { CachesPresenter.abbreviated($0, home: home) } }
         var warning: String?
         var command: String?
+        var itemsCaption: String?
         switch ask.target {
         case .cache(let entry):
             title = "Clean \(entry.title)?"
@@ -71,6 +76,7 @@ struct CleanupSheetModel: Equatable {
             case .deleteFolders(let folders): items = tilde(folders)
             case .command(let tool, let args):
                 items = tilde(entry.paths)
+                itemsCaption = "Measured:"
                 command = ([tool] + args).joined(separator: " ")
             case nil: items = tilde(entry.paths)
             }
@@ -107,10 +113,12 @@ struct CleanupSheetModel: Equatable {
         }
         self.warning = warning
         self.command = command
+        self.itemsCaption = itemsCaption
     }
 }
 
-/// The sheet that confirms a clean: what goes, the command that cleans it if a tool does, and what follows.
+/// The sheet that confirms a clean: what goes, or for a cache its tool cleans what was measured and the command, and
+/// what follows.
 ///
 /// The Clean button is not the default one: Return does not delete folders. Escape cancels.
 struct CleanupSheet: View {
@@ -123,7 +131,16 @@ struct CleanupSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
-            if !model.items.isEmpty { items }
+            if !model.items.isEmpty {
+                if let caption = model.itemsCaption {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(caption).font(.callout).foregroundStyle(.secondary)
+                        items
+                    }
+                } else {
+                    items
+                }
+            }
             if let command = model.command {
                 // Labelled, or it reads as one more folder.
                 VStack(alignment: .leading, spacing: 6) {
