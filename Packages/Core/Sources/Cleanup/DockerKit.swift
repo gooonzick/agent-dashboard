@@ -75,14 +75,19 @@ public struct DockerController: DockerControlling {
     private let runner: any CommandRunning
     private let home: URL
     private let environment: [String: String]
+    private let resolve: @Sendable (String) -> String?
 
     /// `environment` is where `DOCKER_CONTEXT` is looked up; it names the context before `docker context show` does.
+    /// `resolve` gives a path as the file system resolves it, or `nil` when it cannot: a socket that is a link is
+    /// followed with it.
     public init(
-        runner: any CommandRunning, home: URL, environment: [String: String] = ProcessInfo.processInfo.environment
+        runner: any CommandRunning, home: URL, environment: [String: String] = ProcessInfo.processInfo.environment,
+        resolve: @escaping @Sendable (String) -> String? = DockerController.resolved
     ) {
         self.runner = runner
         self.home = home
         self.environment = environment
+        self.resolve = resolve
     }
 
     public func status() async -> DockerStatus {
@@ -91,17 +96,15 @@ public struct DockerController: DockerControlling {
             return .notAnswering
         }
         let root = home.path
-        if endpoint.hasPrefix("unix://\(root)/.colima/"), endpoint.hasSuffix("/docker.sock") {
-            let profile = String(endpoint.dropFirst("unix://\(root)/.colima/".count).dropLast("/docker.sock".count))
-            return .runtime(await colima(context: context, profile: profile))
-        }
         let (kind, disk): (DockerRuntimeKind, String)
-        switch endpoint {
-        case "unix://\(root)/.docker/run/docker.sock":
+        switch Self.socket(endpoint, under: root) ?? linkedSocket(endpoint) {
+        case .colima(let profile)?:
+            return .runtime(await colima(context: context, profile: profile))
+        case .desktop?:
             (kind, disk) = (.desktop, "\(root)/Library/Containers/com.docker.docker/Data/vms/0/data")
-        case "unix://\(root)/.orbstack/run/docker.sock":
+        case .orbstack?:
             (kind, disk) = (.orbstack, "\(root)/Library/Group Containers/HUAB2SQ2CL.dev.kdrag0n.MacVirt/data")
-        default:
+        case nil:
             return .unknownContext(context)
         }
         return .runtime(
@@ -137,6 +140,43 @@ public struct DockerController: DockerControlling {
     }
 
     // MARK: - Runtime
+
+    /// The socket of a runtime that this knows, and the colima profile it belongs to.
+    private enum KnownSocket: Equatable {
+        case colima(profile: String)
+        case desktop, orbstack
+    }
+
+    /// Which runtime `endpoint` is the socket of, for a home at `root`; `nil` for any other endpoint.
+    private static func socket(_ endpoint: String, under root: String) -> KnownSocket? {
+        let colima = "unix://\(root)/.colima/"
+        if endpoint.hasPrefix(colima), endpoint.hasSuffix("/docker.sock") {
+            return .colima(profile: String(endpoint.dropFirst(colima.count).dropLast("/docker.sock".count)))
+        }
+        switch endpoint {
+        case "unix://\(root)/.docker/run/docker.sock": return .desktop
+        case "unix://\(root)/.orbstack/run/docker.sock": return .orbstack
+        default: return nil
+        }
+    }
+
+    /// The runtime whose socket `endpoint` is a link to. The `default` context talks to `/var/run/docker.sock`, which
+    /// Docker Desktop and OrbStack link to their own socket in home. The home is tried resolved too, since the link
+    /// leads to the resolved path.
+    private func linkedSocket(_ endpoint: String) -> KnownSocket? {
+        guard endpoint.hasPrefix("unix://"), let target = resolve(String(endpoint.dropFirst("unix://".count))) else {
+            return nil
+        }
+        let roots = [home.path] + [resolve(home.path)].compactMap { $0 }.filter { $0 != home.path }
+        return roots.lazy.compactMap { Self.socket("unix://" + target, under: $0) }.first
+    }
+
+    /// `path` as `realpath` resolves it, or `nil` when it does not exist.
+    public static func resolved(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
 
     private func currentContext() async -> String? {
         if let named = environment["DOCKER_CONTEXT"], !named.isEmpty { return named }

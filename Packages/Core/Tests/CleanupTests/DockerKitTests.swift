@@ -2,6 +2,7 @@ import CoreModels
 import Foundation
 import Synchronization
 import Testing
+import TestSupport
 
 @testable import Cleanup
 @testable import Shell
@@ -24,8 +25,14 @@ private func answers(context: String, inspect: String, running: Bool = true) thr
     ]
 }
 
+/// What `docker context inspect default` prints for a context whose endpoint is `host`.
+private func defaultContext(host: String) -> String {
+    #"[{"Name":"default","Metadata":{},"Endpoints":{"docker":{"Host":"\#(host)","SkipTLSVerify":false}}}]"#
+}
+
+/// A controller that resolves no link: `home` is not on this Mac, and nothing outside a temporary folder is read.
 private func controller(_ runner: FakeDocker, environment: [String: String] = [:]) -> DockerController {
-    DockerController(runner: runner, home: home, environment: environment)
+    DockerController(runner: runner, home: home, environment: environment) { _ in nil }
 }
 
 @Suite("DockerController")
@@ -120,6 +127,70 @@ struct DockerKitTests {
             diskPath: "/Users/x/Library/Group Containers/HUAB2SQ2CL.dev.kdrag0n.MacVirt/data", diskLimit: nil,
             cpus: nil, memory: nil)
         #expect(status == .runtime(expected))
+    }
+
+    @Test func theDefaultContextIsTheRuntimeItsSocketLinksTo() async throws {
+        // `/var/run/docker.sock` stands in a temporary folder, linked to the socket Docker Desktop keeps in home.
+        let dir = try TempDir(named: "machine")
+        let home = dir.url.appending(path: "home")
+        let socket = home.path + "/.docker/run/docker.sock"
+        try FileManager.default.createDirectory(
+            atPath: (socket as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try Data().write(to: URL(filePath: socket))
+        let run = dir.url.path + "/var/run"
+        try FileManager.default.createDirectory(atPath: run, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: run + "/docker.sock", withDestinationPath: socket)
+        let runner = FakeDocker(answers: [
+            "docker context show": ok("default\n"),
+            "docker context inspect default": ok(defaultContext(host: "unix://\(run)/docker.sock")),
+            "docker info": ok("Server: ok"),
+        ])
+
+        let status = await DockerController(runner: runner, home: home, environment: [:]).status()
+
+        let expected = DockerRuntime(
+            kind: .desktop, context: "default", profile: nil, isRunning: true,
+            diskPath: home.path + "/Library/Containers/com.docker.docker/Data/vms/0/data", diskLimit: nil, cpus: nil,
+            memory: nil)
+        #expect(status == .runtime(expected))
+    }
+
+    @Test(arguments: [
+        ("/Users/x/.orbstack/run/docker.sock", DockerRuntimeKind.orbstack),
+        ("/Users/x/.colima/work/docker.sock", .colima),
+    ])
+    func varRunDockerSockIsFollowed(target: String, kind: DockerRuntimeKind) async throws {
+        let runner = FakeDocker(answers: [
+            "docker context show": ok("default\n"),
+            "docker context inspect default": ok(defaultContext(host: "unix:///var/run/docker.sock")),
+            "docker info": ok("Server: ok"),
+            "colima list --json": ok(try recorded("colima-list")),
+        ])
+        let controller = DockerController(runner: runner, home: home, environment: [:]) { path in
+            path == "/var/run/docker.sock" ? target : nil
+        }
+
+        guard case .runtime(let runtime) = await controller.status() else {
+            Issue.record("not a runtime")
+            return
+        }
+        #expect(runtime.kind == kind)
+        #expect(runtime.context == "default")
+        #expect(runtime.profile == (kind == .colima ? "work" : nil))
+    }
+
+    @Test func aSocketThatLinksElsewhereIsAnUnknownContext() async throws {
+        let runner = FakeDocker(answers: [
+            "docker context show": ok("default\n"),
+            "docker context inspect default": ok(defaultContext(host: "unix:///var/run/docker.sock")),
+        ])
+        let unlinked = DockerController(runner: runner, home: home, environment: [:]) { _ in nil }
+        let elsewhere = DockerController(runner: runner, home: home, environment: [:]) { path in
+            path == "/var/run/docker.sock" ? "/opt/rancher/docker.sock" : nil
+        }
+
+        #expect(await unlinked.status() == .unknownContext("default"))
+        #expect(await elsewhere.status() == .unknownContext("default"))
     }
 
     @Test func anUnknownContextIsNamed() async throws {
