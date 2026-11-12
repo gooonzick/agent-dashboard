@@ -16,22 +16,28 @@ public struct DashboardCache: Sendable {
         /// What the Caches and Docker page measured, by the key of `CleanupState.sizes`: the id of a cache, the path of
         /// a build output, or `CleanupState.dockerDiskKey`. A file written before the page existed has none.
         public var cleanupSizes: [String: SizeInfo]
+        /// The folders that each of `cleanupSizes` was measured for, by the same key: a size of other folders than a
+        /// row has now is measured again. A size without them counts as one of other folders.
+        public var cleanupPaths: [String: [String]]
 
         public init(
-            repositories: [String] = [], sizes: [String: SizeInfo] = [:], cleanupSizes: [String: SizeInfo] = [:]
+            repositories: [String] = [], sizes: [String: SizeInfo] = [:], cleanupSizes: [String: SizeInfo] = [:],
+            cleanupPaths: [String: [String]] = [:]
         ) {
             self.repositories = repositories
             self.sizes = sizes
             self.cleanupSizes = cleanupSizes
+            self.cleanupPaths = cleanupPaths
         }
 
-        private enum CodingKeys: String, CodingKey { case repositories, sizes, cleanupSizes }
+        private enum CodingKeys: String, CodingKey { case repositories, sizes, cleanupSizes, cleanupPaths }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             repositories = try container.decode([String].self, forKey: .repositories)
             sizes = try container.decode([String: SizeInfo].self, forKey: .sizes)
             cleanupSizes = try container.decodeIfPresent([String: SizeInfo].self, forKey: .cleanupSizes) ?? [:]
+            cleanupPaths = try container.decodeIfPresent([String: [String]].self, forKey: .cleanupPaths) ?? [:]
         }
     }
 
@@ -61,7 +67,8 @@ public struct DashboardCache: Sendable {
         else { return Contents() }
         return Contents(
             repositories: file.contents.repositories.filter { $0.hasPrefix("/") },
-            sizes: file.contents.sizes.filter { $0.key.hasPrefix("/") }, cleanupSizes: file.contents.cleanupSizes)
+            sizes: file.contents.sizes.filter { $0.key.hasPrefix("/") }, cleanupSizes: file.contents.cleanupSizes,
+            cleanupPaths: file.contents.cleanupPaths)
     }
 
     /// Replaces what the file holds, making its folder if there is none. The file is replaced as a whole, so a reader

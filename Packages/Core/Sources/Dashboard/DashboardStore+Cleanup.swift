@@ -21,8 +21,11 @@ public struct CleanupState: Equatable, Sendable {
     public var inventory: DockerInventory?
     public var caches: [CacheEntry]
     public var buildOutputs: [BuildOutput]
-    /// What deleting would free, in bytes (`SizeInfo.privateBytes`): by `CacheEntry.id`, by `BuildOutput.path`, and the
-    /// disk of the VM at `dockerDiskKey`. A key that has none is still to be measured.
+    /// In bytes, by `CacheEntry.id`, by `BuildOutput.path`, and the disk of the VM at `dockerDiskKey` (Ruling 9). A
+    /// cache and the disk are what they take (`SizeInfo.apparentBytes`): the pnpm store shares nearly all its data
+    /// with the `node_modules` of the projects, and what it frees alone would read close to nothing. A build output is
+    /// what deleting it frees (`SizeInfo.privateBytes`), as a worktree is. A key that has none is still to be
+    /// measured.
     public var sizes: [String: UInt64]
     /// What is being cleaned or started now: the id of a cache, the path of a build output, or one of the Docker ids
     /// above. The page offers nothing more for them until they are done.
@@ -68,13 +71,18 @@ extension DashboardStore {
         defer { cleanup.isLoading = false }
         let (docker, caches, finder) = (env.docker, env.caches, env.buildOutputs)
         let (repos, worktrees) = (repositories.keys.sorted(), worktreeRoots)
+        // A clean may finish while this load runs, and what the load lists may be from before it (Ruling 10).
+        let listings = cacheListings
+        deletedOutputs = []
         async let status = CleanupWork.status(of: docker)
         async let entries = CleanupWork.entries(of: caches, repositories: repos)
         async let outputs = CleanupWork.find(in: worktrees, with: finder)
         await show(await status)
-        cleanup.caches = await entries
-        cleanup.buildOutputs = await outputs
+        let listed = await entries
+        if cacheListings == listings { cleanup.caches = listed }
+        cleanup.buildOutputs = await outputs.filter { !deletedOutputs.contains($0.path) }
         cleanup.loadedAt = env.now()
+        updateBuildOutputUsers()
         // Only now that all three are in: the sizes of what is no longer there go, and those of what is not listed yet
         // must not.
         updateCleanupTargets()
@@ -93,6 +101,7 @@ extension DashboardStore {
         defer { cleanup.working.remove(entry.id) }
         let failure = await CleanupWork.clean(entry, with: env.caches)
         cleanup.caches = await CleanupWork.entries(of: env.caches, repositories: repositories.keys.sorted())
+        cacheListings += 1
         updateCleanupTargets()
         // A clean that stopped half way deleted what it deleted, so the size is measured again either way.
         measureCleanup([entry.id], first: true)
@@ -110,7 +119,9 @@ extension DashboardStore {
             return CachesPresenter.message(for: failure)
         }
         cleanup.buildOutputs.removeAll { $0.path == output.path }
+        deletedOutputs.insert(output.path)
         updateCleanupTargets()
+        updateBuildOutputUsers()
         measureNow([output.worktree])
         saveCache()
         return nil
@@ -195,10 +206,19 @@ extension DashboardStore {
         if cleanup.docker != status { cleanup.docker = status }
     }
 
+    // MARK: In use
+
+    /// Finds again which build outputs a process runs in, and sets `buildOutputUsers` if that changed.
+    func updateBuildOutputUsers() {
+        let users = CachesPage.users(of: cleanup.buildOutputs, in: groups)
+        if users != buildOutputUsers { buildOutputUsers = users }
+    }
+
     // MARK: Sizes
 
-    /// Notes which folders each row stands for, now that the rows changed, and drops the sizes of the rows that are
-    /// gone.
+    /// Notes which folders each row stands for, now that the rows changed. The sizes of the rows that are gone go, and
+    /// so do those of the rows whose folders changed (another docker context, a pnpm store of a new version), which
+    /// are measured again at once rather than showing the size of other folders for 6 hours (Ruling 10).
     private func updateCleanupTargets() {
         var targets: [String: [String]] = [:]
         if case .runtime(let runtime)? = cleanup.docker, let disk = runtime.diskPath {
@@ -207,10 +227,21 @@ extension DashboardStore {
         for entry in cleanup.caches { targets[entry.id] = entry.paths }
         for output in cleanup.buildOutputs { targets[output.path] = [output.path] }
         cleanupTargets = targets
-        cleanupSizes = cleanupSizes.filter { targets[$0.key] != nil }
+        let moved = cleanupSizes.keys.filter { key in
+            targets[key].map { Set($0) != Set(cleanupSizePaths[key] ?? []) } ?? false
+        }
+        cleanupSizes = cleanupSizes.filter { targets[$0.key] != nil && !moved.contains($0.key) }
+        cleanupSizePaths = cleanupSizePaths.filter { cleanupSizes[$0.key] != nil }
         cleanupQueue.removeAll { targets[$0] == nil }
-        let sizes = cleanupSizes.mapValues { UInt64(clamping: $0.privateBytes) }
+        let sizes = Dictionary(uniqueKeysWithValues: cleanupSizes.map { ($0.key, Self.shownBytes($0.key, $0.value)) })
         if cleanup.sizes != sizes { cleanup.sizes = sizes }
+        measureCleanup(moved.sorted())
+    }
+
+    /// What the page shows of `size` (Ruling 9): what a build output frees, what a cache or the disk of the VM takes.
+    /// The key of a build output is its path, and no other key is a path.
+    private static func shownBytes(_ key: String, _ size: SizeInfo) -> UInt64 {
+        UInt64(clamping: key.hasPrefix("/") ? size.privateBytes : size.apparentBytes)
     }
 
     /// The keys of the rows in the order of the page: the VM's disk, the caches, the build outputs.
@@ -238,7 +269,7 @@ extension DashboardStore {
         cleanupWorker = Task(priority: .background) { [weak self] in
             while let job = self?.nextCleanupJob() {
                 let size = await CleanupWork.measure(job.paths, with: measurer)
-                self?.finishCleanupSize(of: job.key, size)
+                self?.finishCleanupSize(of: job.key, measured: job.paths, size)
             }
         }
     }
@@ -255,12 +286,15 @@ extension DashboardStore {
         return nil
     }
 
-    private func finishCleanupSize(of key: String, _ size: SizeInfo) {
-        guard cleanupTargets[key] != nil else { return }
+    private func finishCleanupSize(of key: String, measured paths: [String], _ size: SizeInfo) {
+        guard let targets = cleanupTargets[key] else { return }
+        // The row's folders changed while these were measured.
+        guard Set(targets) == Set(paths) else { return measureCleanup([key]) }
         // Stamped with the store's clock, which the 6 hours are counted on, here and after a restart.
         cleanupSizes[key] = SizeInfo(
             apparentBytes: size.apparentBytes, privateBytes: size.privateBytes, computedAt: env.now())
-        cleanup.sizes[key] = UInt64(clamping: size.privateBytes)
+        cleanupSizePaths[key] = paths
+        cleanup.sizes[key] = Self.shownBytes(key, size)
     }
 }
 

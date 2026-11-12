@@ -8,7 +8,7 @@ import Foundation
 public struct CachesPage: Equatable, Sendable {
     /// Everything measured: the disk of the VM, the build outputs and the caches.
     public let total: UInt64
-    /// The build outputs that nothing runs in, the caches that have something to clean, and what Docker would free of
+    /// The build outputs that nothing runs in, the caches whose clean empties them, and what Docker would free of
     /// unused images and stopped containers while it is known.
     public let cleanable: UInt64
     /// The categories by size, the largest first, and the caches of no category as `Other`, last. A category with
@@ -21,6 +21,10 @@ public struct CachesPage: Equatable, Sendable {
     public let packages: [CleanupRow]
     public let xcode: [CleanupRow]
 
+    /// The caches whose clean frees only part of them, which `cleanable` does not count: `pnpm store prune` removes
+    /// the packages no project uses, and the simulators that are deleted are the unavailable ones (Ruling 10).
+    private static let partialCleans: Set<String> = ["pnpm", "simulators"]
+
     /// The categories of the bar and the rows that each one sums, by the key of `CleanupState.sizes`. The build
     /// outputs are a category of their own, added in `init`.
     private static let categories: [(label: String, keys: [String])] = [
@@ -32,16 +36,15 @@ public struct CachesPage: Equatable, Sendable {
         ("npm", ["npm"]),
     ]
 
-    /// `groups` are the store's, by worktree: a build output that a process of them runs in, or runs a file of, is not
+    /// `users` is the store's `buildOutputUsers`: a build output that a process runs in, or runs a file of, is not
     /// offered. A `query` keeps the rows whose title, subtitle or path holds it; the totals and the bar stay those of
     /// everything. `home` is shown as `~` in the paths.
     public init(
-        state: CleanupState, groups: [String: [ProcessGroup]], query: String = "",
+        state: CleanupState, users: [String: String], query: String = "",
         home: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         let sizes = state.sizes
-        let users = Self.users(of: state.buildOutputs, in: groups)
 
         let outputs = state.buildOutputs.map { output in
             CleanupRow(output, size: sizes[output.path], user: users[output.path], state: state)
@@ -69,7 +72,8 @@ public struct CachesPage: Equatable, Sendable {
         let freeOutputs = state.buildOutputs.filter { users[$0.path] == nil }.reduce(UInt64(0)) {
             $0.adding(sizes[$1.path])
         }
-        let freeCaches = state.caches.filter { $0.clean != nil }.reduce(UInt64(0)) { $0.adding(sizes[$1.id]) }
+        let freeCaches = state.caches.filter { $0.clean != nil && !Self.partialCleans.contains($0.id) }
+            .reduce(UInt64(0)) { $0.adding(sizes[$1.id]) }
         cleanable = freeOutputs.adding(freeCaches).adding(docker.reclaimable)
 
         var named = Self.categories.map { category in
@@ -89,7 +93,7 @@ public struct CachesPage: Equatable, Sendable {
 
     /// The name of a process that runs in each output, or runs a file of it, by the path of the output. The groups are
     /// looked through in the order of their worktrees and pids, so the name does not change from one draw to the next.
-    private static func users(of outputs: [BuildOutput], in groups: [String: [ProcessGroup]]) -> [String: String] {
+    static func users(of outputs: [BuildOutput], in groups: [String: [ProcessGroup]]) -> [String: String] {
         guard !outputs.isEmpty else { return [:] }
         let processes = groups.sorted { $0.key < $1.key }.flatMap { $0.value.sorted { $0.id < $1.id } }
             .flatMap { [$0.leader] + $0.members }

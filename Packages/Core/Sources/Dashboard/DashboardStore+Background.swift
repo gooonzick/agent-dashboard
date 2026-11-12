@@ -226,7 +226,7 @@ extension DashboardStore {
         let worktrees = Set(worktreeRoots)
         let contents = DashboardCache.Contents(
             repositories: repositories.keys.sorted(), sizes: sizes.filter { worktrees.contains($0.key) },
-            cleanupSizes: cleanupSizes)
+            cleanupSizes: cleanupSizes, cleanupPaths: cleanupSizePaths)
         cacheVersion += 1
         let (version, writer) = (cacheVersion, cacheWriter)
         pendingCacheWrites += 1

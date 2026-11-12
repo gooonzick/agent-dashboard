@@ -29,15 +29,16 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
 @Suite struct CachesPageTests {
     @Test func headlineAndCleanable() {
         let simulators = cache("simulators", .xcode, cleanable: false)
+        // pnpm and the simulators have something to clean, but cleaning them does not free what they take.
         let state = CleanupState(
-            docker: colima(running: false), caches: [cache("pnpm"), simulators],
+            docker: colima(running: false), caches: [cache("npm"), cache("pnpm"), cache("simulators", .xcode)],
             buildOutputs: [output("target", in: "/x/wt")],
             sizes: [
-                CleanupState.dockerDiskKey: 20 * gigabyte, "/x/wt/target": 15 * gigabyte, "pnpm": 55 * gigabyte,
-                "simulators": 23 * gigabyte,
+                CleanupState.dockerDiskKey: 20 * gigabyte, "/x/wt/target": 15 * gigabyte, "npm": 55 * gigabyte,
+                "pnpm": 13 * gigabyte, "simulators": 10 * gigabyte,
             ])
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         #expect(page.total == 113 * gigabyte)
         #expect(page.cleanable == 70 * gigabyte)
@@ -46,14 +47,30 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         #expect(headline.detail == "in caches, toolchains and VMs · about 70 GB can be cleaned safely")
 
         let nothing = CachesPage(
-            state: CleanupState(caches: [simulators], sizes: ["simulators": 23 * gigabyte]), groups: [:], home: home)
+            state: CleanupState(caches: [simulators], sizes: ["simulators": 23 * gigabyte]), users: [:], home: home)
         #expect(CachesPresenter.headline(nothing).total == "23 GB")
         #expect(CachesPresenter.headline(nothing).detail == "in caches, toolchains and VMs")
     }
 
+    @Test func pnpmAndTheSimulatorsAreShownButNotCountedAsCleanable() {
+        let state = CleanupState(
+            caches: [cache("pnpm", action: "Prune"), cache("simulators", .xcode, action: "Delete Unavailable")],
+            sizes: ["pnpm": 13 * gigabyte, "simulators": 10 * gigabyte])
+
+        let page = CachesPage(state: state, users: [:], home: home)
+
+        #expect(page.total == 23 * gigabyte)
+        #expect(page.cleanable == 0)
+        #expect(CachesPresenter.headline(page).detail == "in caches, toolchains and VMs")
+        #expect(page.packages.map(\.size) == [13 * gigabyte])
+        #expect(page.packages.map(\.isEnabled) == [true])
+        #expect(page.xcode.map(\.size) == [10 * gigabyte])
+        #expect(page.xcode.map(\.isEnabled) == [true])
+    }
+
     @Test func smallAmountsKeepATenth() {
         let page = CachesPage(
-            state: CleanupState(caches: [cache("npm")], sizes: ["npm": 4_400_000_000]), groups: [:], home: home)
+            state: CleanupState(caches: [cache("npm")], sizes: ["npm": 4_400_000_000]), users: [:], home: home)
 
         #expect(
             CachesPresenter.headline(page)
@@ -64,7 +81,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         let state = CleanupState(
             docker: colima(running: true), inventory: someInventory, sizes: [CleanupState.dockerDiskKey: 20 * gigabyte])
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         #expect(page.total == 20 * gigabyte)
         // The unused image and the stopped container.
@@ -82,7 +99,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             buildOutputs: [output("target", in: "/x/a"), output("build", in: "/x/b")],
             sizes: tenths.mapValues { $0 * gigabyte / 10 })
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         #expect(
             page.bar.map(\.label)
@@ -94,7 +111,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
     @Test func aCategoryWithNothingMeasuredIsLeftOut() {
         let state = CleanupState(caches: [cache("npm"), cache("go")], sizes: ["npm": 2 * gigabyte, "go": 0])
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         #expect(page.bar.map(\.label) == ["npm"])
     }
@@ -113,7 +130,9 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             ]
         ]
 
-        let page = CachesPage(state: state, groups: groups, home: home)
+        let users = CachesPage.users(of: state.buildOutputs, in: groups)
+        #expect(users == [dist.path: "vite", target.path: "app"])
+        let page = CachesPage(state: state, users: users, home: home)
         let rows = Dictionary(uniqueKeysWithValues: page.outputs.map { ($0.id, $0) })
 
         #expect(rows[dist.path]?.isEnabled == false)
@@ -128,7 +147,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             buildOutputs: [output("dist", in: "/x/wt"), output("build", in: "/x/wt")],
             sizes: ["/x/wt/dist": 3 * gigabyte, "/x/wt/build": 2 * gigabyte])
 
-        let page = CachesPage(state: state, groups: ["/x/wt": [group(10, name: "vite", cwd: "/x/wt/dist")]], home: home)
+        let page = CachesPage(state: state, users: ["/x/wt/dist": "vite"], home: home)
 
         #expect(page.total == 5 * gigabyte)
         #expect(page.cleanable == 2 * gigabyte)
@@ -150,7 +169,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             sizes: ["pnpm": 13 * gigabyte, "/x/a/target": 9 * gigabyte, "/x/b/build": 2 * gigabyte],
             working: ["derived-data"])
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         // The largest first; one that is not measured yet last.
         #expect(page.outputs.map(\.title) == ["a/target", "b/build", "c/dist"])
@@ -198,7 +217,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
 
     @Test func theDockerCardSaysWhatIsWrong() {
         func section(_ status: DockerStatus?) -> DockerSection {
-            CachesPage(state: CleanupState(docker: status), groups: [:], home: home).docker
+            CachesPage(state: CleanupState(docker: status), users: [:], home: home).docker
         }
 
         #expect(section(nil).message == nil)
@@ -214,7 +233,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             docker: colima(running: false), sizes: [CleanupState.dockerDiskKey: 20_500_000_000],
             working: [CleanupState.startDockerID])
 
-        let docker = CachesPage(state: state, groups: [:], home: home).docker
+        let docker = CachesPage(state: state, users: [:], home: home).docker
 
         #expect(docker.title == "colima · default")
         #expect(docker.line == "VM disk 20.5 GB of 100 GB · 4 CPU · 8 GB RAM")
@@ -229,7 +248,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         let state = CleanupState(
             docker: colima(running: true), inventory: someInventory, working: [CleanupState.unusedImagesID])
 
-        let docker = CachesPage(state: state, groups: [:], home: home).docker
+        let docker = CachesPage(state: state, users: [:], home: home).docker
 
         #expect(docker.isRunning)
         #expect(!docker.isStarting)
@@ -250,7 +269,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         let empty = DockerInventory(
             images: [someInventory.images[0]], containers: [], volumesSize: 0, buildCacheSize: 0)
         let clean = CachesPage(
-            state: CleanupState(docker: colima(running: true), inventory: empty), groups: [:], home: home)
+            state: CleanupState(docker: colima(running: true), inventory: empty), users: [:], home: home)
         #expect(
             clean.docker.rows.map(\.detail) == ["1 image · 0.4 GB", "0 running, 0 stopped", "< 0.1 GB", "< 0.1 GB"])
         #expect(clean.docker.rows[0].isEnabled == false)
@@ -270,7 +289,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             buildOutputs: [output("target", in: "/x/meetily"), output("dist", in: "/x/web")])
 
         func ids(_ query: String) -> [String] {
-            let page = CachesPage(state: state, groups: [:], query: query, home: home)
+            let page = CachesPage(state: state, users: [:], query: query, home: home)
             return (page.outputs + page.packages + page.xcode).map(\.id)
         }
 
@@ -284,7 +303,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
     @Test func aQueryLeavesTheTotalsAlone() {
         let state = CleanupState(caches: [cache("npm"), cache("go")], sizes: ["npm": 2 * gigabyte, "go": 3 * gigabyte])
 
-        let page = CachesPage(state: state, groups: [:], query: "npm", home: home)
+        let page = CachesPage(state: state, users: [:], query: "npm", home: home)
 
         #expect(page.packages.map(\.id) == ["npm"])
         #expect(page.total == 5 * gigabyte)
@@ -297,7 +316,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
             cache("elsewhere", paths: ["/Users/meow/cache", "/opt/cache"]),
         ])
 
-        let page = CachesPage(state: state, groups: [:], home: home)
+        let page = CachesPage(state: state, users: [:], home: home)
 
         #expect(page.packages.map(\.subtitle) == [
             "~/Library/Caches/Homebrew", "~/go/pkg/mod · ~/Library/Caches/go-build", "/Users/meow/cache · /opt/cache",

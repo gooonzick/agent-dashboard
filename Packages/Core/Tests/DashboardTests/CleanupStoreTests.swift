@@ -32,6 +32,20 @@ let goCaches = CacheEntry(
     id: "go", group: .packages, title: "Go modules and build cache", paths: ["/c/go/mod", "/c/go/build"], note: nil,
     action: "Clean", clean: .command(tool: "go", args: ["clean", "-modcache", "-cache"]))
 
+extension CacheEntry {
+    /// The entry, with its folders at `paths`.
+    func with(paths: [String]) -> CacheEntry {
+        CacheEntry(id: id, group: group, title: title, paths: paths, note: note, action: action, clean: clean)
+    }
+}
+
+/// A process for a sample that runs in `cwd` and takes `footprint` bytes of memory.
+func record(_ pid: Int32, name: String, cwd: String, footprint: UInt64) -> ProcessRecord {
+    ProcessRecord(
+        pid: pid, ppid: 1, name: name, executablePath: "/usr/bin/\(name)", arguments: [name], cwd: cwd,
+        footprintBytes: footprint, startDate: Date(timeIntervalSince1970: 1_800_000_000), listeningPorts: [])
+}
+
 /// A build output of the worktree at `worktree`.
 func output(_ relative: String, in worktree: String) -> BuildOutput {
     BuildOutput(
@@ -59,8 +73,8 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
 
     @Test func sizesArriveOneByOne() async throws {
         let scene = try machine()
-        scene.sizes.set("/c/go/mod", SizeInfo(apparentBytes: 9, privateBytes: 3_000, computedAt: .distantPast))
-        scene.sizes.set("/c/go/build", SizeInfo(apparentBytes: 9, privateBytes: 500, computedAt: .distantPast))
+        scene.sizes.set("/c/go/mod", SizeInfo(apparentBytes: 3_000, privateBytes: 9, computedAt: .distantPast))
+        scene.sizes.set("/c/go/build", SizeInfo(apparentBytes: 500, privateBytes: 9, computedAt: .distantPast))
         let store = await scene.startedStore()
         let before = scene.sizes.measured.count
         scene.sizes.hold("/vm/disk")
@@ -83,9 +97,80 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
             measured(scene, after: before) == ["/vm/disk", "/c/homebrew", "/c/go/mod", "/c/go/build", "/x/wt/target"])
         #expect(
             store.cleanup.sizes == [
-                CleanupState.dockerDiskKey: 100_000_000, "homebrew": 100_000_000, "go": 3_500,
+                CleanupState.dockerDiskKey: 1_000_000_000, "homebrew": 1_000_000_000, "go": 3_500,
                 "/x/wt/target": 100_000_000,
             ])
+    }
+
+    @Test func cachesAndTheDiskShowWhatTheyTakeAndBuildOutputsWhatTheyFree() async throws {
+        let scene = try machine()
+        scene.sizes.set("/vm/disk", SizeInfo(apparentBytes: 20_000, privateBytes: 2, computedAt: .distantPast))
+        scene.sizes.set("/c/homebrew", SizeInfo(apparentBytes: 4_900, privateBytes: 3, computedAt: .distantPast))
+        scene.sizes.set("/x/wt/target", SizeInfo(apparentBytes: 13_800, privateBytes: 13_000, computedAt: .distantPast))
+        let store = await scene.startedStore()
+
+        await store.loadCleanup()
+        await scene.settle(store)
+
+        #expect(store.cleanup.sizes[CleanupState.dockerDiskKey] == 20_000)
+        #expect(store.cleanup.sizes["homebrew"] == 4_900)
+        #expect(store.cleanup.sizes["/x/wt/target"] == 13_000)
+
+        // And so after a restart, from the cache.
+        let next = await scene.startedStore()
+        await next.loadCleanup()
+        #expect(next.cleanup.sizes == store.cleanup.sizes)
+    }
+
+    @Test func aRowWhoseFoldersChangedIsMeasuredAgainAtOnce() async throws {
+        let scene = try machine()
+        let store = await scene.startedStore()
+        await store.loadCleanup()
+        await scene.settle(store)
+        let before = scene.sizes.measured.count
+        scene.sizes.set("/vm/other", SizeInfo(apparentBytes: 7_000, privateBytes: 1, computedAt: .distantPast))
+        // Another docker context, and a pnpm store of a new version: an hour later, well within the 6 hours.
+        scene.docker.willAnswer([colima(running: false, disk: "/vm/other")])
+        scene.caches.set([homebrew, goCaches.with(paths: ["/c/go/mod2"])])
+        scene.passTime(60 * 60)
+
+        await store.loadCleanup()
+        await scene.settle(store)
+
+        #expect(Set(measured(scene, after: before)) == ["/vm/other", "/c/go/mod2"])
+        #expect(store.cleanup.sizes[CleanupState.dockerDiskKey] == 7_000)
+    }
+
+    @Test func aLoadThatBeganBeforeACleanDoesNotBringTheRowBack() async throws {
+        let scene = try machine()
+        let store = await scene.startedStore()
+        await store.loadCleanup()
+        await scene.settle(store)
+        let (listing, finding) = (Gate(), Gate())
+        scene.caches.holdNextListing(at: listing)
+        scene.buildOutputs.holdNextFind(at: finding)
+
+        // The load lists Homebrew and the build output, and is held there.
+        let load = Task { await store.loadCleanup(force: true) }
+        #expect(await poll { scene.caches.projectsUsingPnpm.count == 2 && scene.buildOutputs.asked.count == 2 })
+        // Both are cleaned meanwhile, and are gone when the clean lists again.
+        scene.caches.set([goCaches])
+        #expect(await store.clean(cache: homebrew) == nil)
+        #expect(await store.clean(output: output("target", in: "/x/wt")) == nil)
+        listing.open()
+        finding.open()
+        await load.value
+        await scene.settle(store)
+
+        #expect(store.cleanup.caches == [goCaches])
+        #expect(store.cleanup.buildOutputs.isEmpty)
+        #expect(store.cleanup.sizes["homebrew"] == nil)
+        #expect(store.cleanup.sizes["/x/wt/target"] == nil)
+
+        // The next load takes what it lists again.
+        scene.buildOutputs.set([output("target", in: "/x/wt")])
+        await store.loadCleanup()
+        #expect(store.cleanup.buildOutputs == [output("target", in: "/x/wt")])
     }
 
     @Test func sizesStandSixHours() async throws {
@@ -369,6 +454,41 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
 
         #expect(scene.docker.calls.isEmpty)
         #expect(store.cleanup == CleanupState())
+    }
+
+    @Test func whatThePageReadsChangesWithAProcessInAnOutputAndNotWithItsMemory() async throws {
+        let scene = try machine()
+        scene.sampler.set([record(10, name: "zsh", cwd: "/x/wt", footprint: 1 << 20)])
+        let store = await scene.startedStore()
+        await store.refresh()
+        await store.loadCleanup()
+        await scene.settle(store)
+        #expect(store.buildOutputUsers.isEmpty)
+        let changes = Counter()
+        func watch() {
+            withObservationTracking {
+                _ = store.cleanup
+                _ = store.buildOutputUsers
+            } onChange: { changes.increment() }
+        }
+        watch()
+
+        // The same process, with more memory: the sample is new, and nothing the page reads is.
+        scene.sampler.set([record(10, name: "zsh", cwd: "/x/wt", footprint: 9 << 20)])
+        await store.refresh()
+        await scene.settle(store)
+        #expect(store.groups["/x/wt"]?.first?.leader.footprintBytes == 9 << 20)
+        #expect(changes.count == 0)
+
+        // A dev server in the build output.
+        scene.sampler.set([
+            record(10, name: "zsh", cwd: "/x/wt", footprint: 9 << 20),
+            record(11, name: "vite", cwd: "/x/wt/target/web", footprint: 1 << 20),
+        ])
+        await store.refresh()
+        await scene.settle(store)
+        #expect(changes.count == 1)
+        #expect(store.buildOutputUsers == ["/x/wt/target": "vite"])
     }
 
     @Test func theCleanupStateIsNotTouchedByTheProcessPoll() async throws {

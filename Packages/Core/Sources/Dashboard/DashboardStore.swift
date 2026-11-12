@@ -62,9 +62,11 @@ struct Repository {
     /// sets it, so the page is not drawn again for a sample or a worktree's size, and the Projects page is not drawn
     /// again for a cache's size.
     public internal(set) var cleanup = CleanupState()
-    /// What runs in each worktree, by its path, from the last sample. Set only when a sample finds something new, so a
-    /// view that reads it (whether a build output is in use) is drawn again for that and for nothing else.
-    public private(set) var groups: [String: [ProcessGroup]] = [:]
+    /// The name of a process that runs in each build output of the Caches and Docker page, or runs a file of it, by
+    /// the path of the output (`CachesPage.users(of:in:)`). Made again after every sample that changed and every load,
+    /// and set only when it differs: the memory of the processes moves with nearly every sample, and the page is not
+    /// drawn again for that.
+    public internal(set) var buildOutputUsers: [String: String] = [:]
     /// Whether the user has been through the first-run window. Until then the store reads nothing, samples nothing and
     /// asks no host: `start()`, `refresh()`, `fetchAll()` and `refreshReviews(host:)` do nothing, and the processes are
     /// not sampled. `completeOnboarding()` ends it.
@@ -95,6 +97,8 @@ struct Repository {
     @ObservationIgnored let env: DashboardEnvironment
     @ObservationIgnored let reader: Reader
     @ObservationIgnored var repositories: [String: Repository] = [:]
+    /// What runs in each worktree, by its path, from the last sample.
+    @ObservationIgnored var groups: [String: [ProcessGroup]] = [:]
     @ObservationIgnored var sizes: [String: SizeInfo] = [:]
     @ObservationIgnored var measuredAt: [String: Date] = [:]
     @ObservationIgnored var staleSizes: Set<String> = []
@@ -127,6 +131,13 @@ struct Repository {
     @ObservationIgnored var pendingCacheWrites = 0
     /// The sizes of the Caches and Docker page, with when each was measured, by the key of `CleanupState.sizes`.
     @ObservationIgnored var cleanupSizes: [String: SizeInfo] = [:]
+    /// The folders that each size of `cleanupSizes` was measured for.
+    @ObservationIgnored var cleanupSizePaths: [String: [String]] = [:]
+    /// How many times a clean listed the caches again: a load that began before one of them takes the caches it
+    /// listed only if this did not move meanwhile.
+    @ObservationIgnored var cacheListings = 0
+    /// The build outputs deleted since the load that runs now began, which its `find` may have listed.
+    @ObservationIgnored var deletedOutputs: Set<String> = []
     /// The folders that each key of `cleanupSizes` stands for, as the last load found them.
     @ObservationIgnored var cleanupTargets: [String: [String]] = [:]
     @ObservationIgnored var cleanupQueue: [String] = []
@@ -279,6 +290,7 @@ struct Repository {
         sizes = cached.sizes
         measuredAt = cached.sizes.mapValues(\.computedAt)
         cleanupSizes = cached.cleanupSizes
+        cleanupSizePaths = cached.cleanupPaths
         for path in cached.repositories where !hidden.contains(path) && repositories[path] == nil {
             repositories[path] = Repository(path: path)
         }
@@ -400,6 +412,7 @@ struct Repository {
         // drawn again for nothing, every 3 seconds.
         guard sampled != groups else { return }
         groups = sampled
+        updateBuildOutputUsers()
         publish()
     }
 

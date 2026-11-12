@@ -566,11 +566,14 @@ final class FakeCaches: CacheCataloging {
         var cleaned: [String] = []
         var cleanedOnMain = false
         var gate: Gate?
+        var listingGate: Gate?
     }
 
     private let state = Mutex(State())
 
     func set(_ entries: [CacheEntry]) { state.withLock { $0.entries = entries } }
+    /// The next `entries` takes its list at once, as it is then, and hands it back once the test opens `gate`.
+    func holdNextListing(at gate: Gate) { state.withLock { $0.listingGate = gate } }
     func fail(_ id: String, with error: (any Error)?) { state.withLock { $0.errors[id] = error } }
     /// Cleans wait here until the test opens it.
     func hold(at gate: Gate?) { state.withLock { $0.gate = gate } }
@@ -580,10 +583,13 @@ final class FakeCaches: CacheCataloging {
     var cleanedOnMain: Bool { state.withLock { $0.cleanedOnMain } }
 
     func entries(projectsUsingPnpm: Int) async -> [CacheEntry] {
-        state.withLock { state in
+        let (entries, gate) = state.withLock { state in
             state.asked.append(projectsUsingPnpm)
-            return state.entries
+            defer { state.listingGate = nil }
+            return (state.entries, state.listingGate)
         }
+        await gate?.wait()
+        return entries
     }
 
     func clean(_ entry: CacheEntry) async throws {
@@ -608,11 +614,14 @@ final class FakeBuildOutputs: BuildOutputFinding {
         var deleted: [String] = []
         var deletedOnMain = false
         var gate: Gate?
+        var findGate: Gate?
     }
 
     private let state = Mutex(State())
 
     func set(_ outputs: [BuildOutput]) { state.withLock { $0.outputs = outputs } }
+    /// The next `find` takes its list at once, as it is then, and hands it back once the test opens `gate`.
+    func holdNextFind(at gate: Gate) { state.withLock { $0.findGate = gate } }
     func fail(_ path: String, with error: (any Error)?) { state.withLock { $0.errors[path] = error } }
     func hold(at gate: Gate?) { state.withLock { $0.gate = gate } }
     /// The worktrees of each `find`, in order.
@@ -621,10 +630,13 @@ final class FakeBuildOutputs: BuildOutputFinding {
     var deletedOnMain: Bool { state.withLock { $0.deletedOnMain } }
 
     func find(in worktrees: [String]) async -> [BuildOutput] {
-        state.withLock { state in
+        let (outputs, gate) = state.withLock { state in
             state.asked.append(worktrees)
-            return state.outputs.filter { worktrees.contains($0.worktree) }
+            defer { state.findGate = nil }
+            return (state.outputs.filter { worktrees.contains($0.worktree) }, state.findGate)
         }
+        await gate?.wait()
+        return outputs
     }
 
     func delete(_ output: BuildOutput) async throws {
