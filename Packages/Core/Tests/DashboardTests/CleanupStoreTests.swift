@@ -77,8 +77,8 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
         scene.sizes.set("/c/go/build", SizeInfo(apparentBytes: 500, privateBytes: 9, computedAt: .distantPast))
         let store = await scene.startedStore()
         let before = scene.sizes.measured.count
-        scene.sizes.hold("/vm/disk")
-        defer { scene.sizes.release("/vm/disk") }
+        scene.sizes.hold("/c/homebrew")
+        defer { scene.sizes.release("/c/homebrew") }
 
         await store.loadCleanup()
 
@@ -86,15 +86,17 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
         #expect(store.cleanup.caches == [homebrew, goCaches])
         #expect(store.cleanup.buildOutputs == [output("target", in: "/x/wt")])
         #expect(store.cleanup.loadedAt == scene.now)
-        #expect(await poll { measured(scene, after: before) == ["/vm/disk"] })
-        #expect(store.cleanup.sizes.isEmpty)
+        // The disk of the VM is measured apart from the queue, which waits on Homebrew.
+        #expect(await poll { Set(measured(scene, after: before)) == ["/vm/disk", "/c/homebrew"] })
+        #expect(await poll { store.cleanup.sizes == [CleanupState.dockerDiskKey: 1_000_000_000] })
         #expect(!store.isIdle)
 
-        scene.sizes.release("/vm/disk")
+        scene.sizes.release("/c/homebrew")
         await scene.settle(store)
 
         #expect(
-            measured(scene, after: before) == ["/vm/disk", "/c/homebrew", "/c/go/mod", "/c/go/build", "/x/wt/target"])
+            measured(scene, after: before).filter { $0 != "/vm/disk" }
+                == ["/c/homebrew", "/c/go/mod", "/c/go/build", "/x/wt/target"])
         #expect(
             store.cleanup.sizes == [
                 CleanupState.dockerDiskKey: 1_000_000_000, "homebrew": 1_000_000_000, "go": 3_500,
@@ -435,6 +437,28 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
         scene.docker.failPrunes(DockerError(message: busy))
         #expect(await store.removeUnusedImages() == busy)
         #expect(store.cleanup.working.isEmpty)
+    }
+
+    @Test func theDiskOfTheVMIsMeasuredAgainWithoutWaitingForTheCaches() async throws {
+        let scene = try machine()
+        scene.docker.willAnswer([colima(running: true)])
+        scene.docker.willHold(someInventory)
+        let store = await scene.startedStore()
+        await store.loadCleanup()
+        await scene.settle(store)
+        scene.sizes.hold("/c/homebrew")
+        defer { scene.sizes.release("/c/homebrew") }
+        await store.loadCleanup(force: true)
+        #expect(await poll { scene.sizes.measuredPaths.last == "/c/homebrew" })
+        scene.sizes.set("/vm/disk", SizeInfo(apparentBytes: 5_000, privateBytes: 5_000, computedAt: .distantPast))
+
+        #expect(await store.removeUnusedImages() == nil)
+
+        // Homebrew, a big folder, is still being measured; the disk, a few files, does not wait for it.
+        #expect(await poll { store.cleanup.sizes[CleanupState.dockerDiskKey] == 5_000 })
+        #expect(!store.isIdle)
+        scene.sizes.release("/c/homebrew")
+        await scene.settle(store)
     }
 
     @Test func buildOutputsComeFromTheStoresWorktrees() async throws {

@@ -142,6 +142,9 @@ struct Repository {
     @ObservationIgnored var cleanupTargets: [String: [String]] = [:]
     @ObservationIgnored var cleanupQueue: [String] = []
     @ObservationIgnored var cleanupWorker: Task<Void, Never>?
+    /// Measures the disk of the Docker VM, apart from `cleanupWorker`, and whether it must measure once more.
+    @ObservationIgnored var dockerDiskWorker: Task<Void, Never>?
+    @ObservationIgnored var dockerDiskAgain = false
 
     public init(env: DashboardEnvironment) {
         self.env = env
@@ -157,6 +160,7 @@ struct Repository {
         sizeWorker?.cancel()
         eventWorker?.cancel()
         cleanupWorker?.cancel()
+        dockerDiskWorker?.cancel()
     }
 
     // MARK: Public operations
@@ -472,6 +476,7 @@ struct Repository {
     /// tests.
     var isIdle: Bool {
         eventsReceived.count == eventsHandled && pendingEvents.isEmpty && eventWorker == nil && sizeWorker == nil
-            && pendingCacheWrites == 0 && !isStarting && cleanupWorker == nil && !cleanup.isLoading
+            && pendingCacheWrites == 0 && !isStarting && cleanupWorker == nil && dockerDiskWorker == nil
+            && !cleanup.isLoading
     }
 }

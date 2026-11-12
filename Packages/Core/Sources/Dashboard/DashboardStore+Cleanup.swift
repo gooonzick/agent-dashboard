@@ -158,7 +158,7 @@ extension DashboardStore {
             do { try await env.sleep(Self.dockerStartPoll) } catch { return nil }
         }
         updateCleanupTargets()
-        measureCleanup([CleanupState.dockerDiskKey], first: true)
+        measureDockerDisk()
         do {
             cleanup.inventory = try await CleanupWork.inventory(of: env.docker)
         } catch {
@@ -185,7 +185,7 @@ extension DashboardStore {
         // A prune that failed half way removed what it removed.
         await show(await CleanupWork.status(of: env.docker))
         updateCleanupTargets()
-        measureCleanup([CleanupState.dockerDiskKey], first: true)
+        measureDockerDisk()
         return failure.map(CachesPresenter.message(for:))
     }
 
@@ -255,8 +255,15 @@ extension DashboardStore {
     }
 
     /// Puts `keys` in the queue, at its end or, with `first`, before everything else, and starts the worker if it is
-    /// not running. One folder at a time, at background priority, as the worktrees are measured.
+    /// not running. One folder at a time, at background priority, as the worktrees are measured. The disk of the VM
+    /// is a few files and is measured at once, apart from the queue: after a prune it would otherwise wait for a cache
+    /// such as DerivedData, which takes minutes.
     private func measureCleanup(_ keys: [String], first: Bool = false) {
+        var keys = keys
+        if keys.contains(CleanupState.dockerDiskKey) {
+            keys.removeAll { $0 == CleanupState.dockerDiskKey }
+            measureDockerDisk()
+        }
         if first {
             cleanupQueue.removeAll { keys.contains($0) }
             cleanupQueue.insert(contentsOf: keys, at: 0)
@@ -271,6 +278,24 @@ extension DashboardStore {
                 let size = await CleanupWork.measure(job.paths, with: measurer)
                 self?.finishCleanupSize(of: job.key, measured: job.paths, size)
             }
+        }
+    }
+
+    /// Measures the disk of the VM in a task of its own. A call while it runs measures it once more after it.
+    private func measureDockerDisk() {
+        guard dockerDiskWorker == nil else { return dockerDiskAgain = true }
+        guard let paths = cleanupTargets[CleanupState.dockerDiskKey] else { return }
+        let measurer = env.sizes
+        dockerDiskWorker = Task(priority: .background) { [weak self] in
+            let size = await CleanupWork.measure(paths, with: measurer)
+            guard let self else { return }
+            dockerDiskWorker = nil
+            let again = dockerDiskAgain
+            dockerDiskAgain = false
+            finishCleanupSize(of: CleanupState.dockerDiskKey, measured: paths, size)
+            if again { measureDockerDisk() }
+            // The queue's worker writes the cache when it is done; this one does when it is the last.
+            if dockerDiskWorker == nil, cleanupWorker == nil { saveCache() }
         }
     }
 
