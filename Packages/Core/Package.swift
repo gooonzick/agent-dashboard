@@ -22,6 +22,7 @@ let package = Package(
         .target(name: "DiskUsage", dependencies: ["CoreModels"], swiftSettings: strict),
         .target(name: "ProcessKit", dependencies: ["CoreModels"], swiftSettings: strict),
         .target(name: "Safety", dependencies: ["CoreModels"], swiftSettings: strict),
+        .target(name: "Cleanup", dependencies: ["CoreModels", "Shell", "DiskUsage"], swiftSettings: strict),
         .target(
             name: "Dashboard",
             dependencies: ["CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety"],
@@ -48,6 +49,9 @@ let package = Package(
         .testTarget(
             name: "ProcessKitTests", dependencies: ["ProcessKit", "CoreModels", "TestSupport"],
             swiftSettings: strict),
+        .testTarget(
+            name: "CleanupTests", dependencies: ["Cleanup", "Shell", "CoreModels", "TestSupport"],
+            resources: [.copy("Fixtures")], swiftSettings: strict),
         .testTarget(name: "SafetyTests", dependencies: ["Safety", "CoreModels"], swiftSettings: strict),
         .testTarget(
             name: "AppShellTests", dependencies: ["AppShell", "Dashboard", "CoreModels", "Hosting", "Safety"],

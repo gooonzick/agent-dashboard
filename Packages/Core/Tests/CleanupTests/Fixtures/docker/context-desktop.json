@@ -1,0 +1,1 @@
+[{"Name":"desktop-linux","Metadata":{"Description":"Docker Desktop"},"Endpoints":{"docker":{"Host":"unix:///Users/x/.docker/run/docker.sock","SkipTLSVerify":false}},"TLSMaterial":{},"Storage":{"MetadataPath":"/Users/x/.docker/contexts/meta/abc","TLSPath":"/Users/x/.docker/contexts/tls/abc"}}]

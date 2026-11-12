@@ -1,0 +1,5 @@
+Deleted Images:
+untagged: node:20
+deleted: sha256:cccccccccccc
+
+Total reclaimed space: 5.393GB

@@ -1,0 +1,4 @@
+Deleted Containers:
+222222222222
+
+Total reclaimed space: 63B

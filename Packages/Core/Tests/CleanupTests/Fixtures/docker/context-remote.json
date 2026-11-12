@@ -1,0 +1,1 @@
+[{"Name":"remote","Metadata":{},"Endpoints":{"docker":{"Host":"tcp://1.2.3.4:2376","SkipTLSVerify":false}},"TLSMaterial":{},"Storage":{"MetadataPath":"/Users/x/.docker/contexts/meta/ghi","TLSPath":"/Users/x/.docker/contexts/tls/ghi"}}]
