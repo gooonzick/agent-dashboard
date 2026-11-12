@@ -198,9 +198,7 @@ public struct DockerController: DockerControlling {
             throw DockerError(message: "\(slow) did not answer in time")
         }
         guard result.exitCode == 0 else {
-            let lines = result.stderr.split(whereSeparator: \.isNewline).filter { !$0.allSatisfy(\.isWhitespace) }
-            let errorLine = lines.first { ["FATA", "ERRO", "Error", "error"].contains(where: $0.hasPrefix) }
-            let line = (errorLine ?? lines.first).map(String.init)
+            let line = firstErrorLine(in: result.stderr)
             throw DockerError(message: line ?? "\(tool) failed with exit code \(result.exitCode)")
         }
         return result.stdout
