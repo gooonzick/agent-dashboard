@@ -91,7 +91,7 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
                         note: projectsUsingPnpm > 0 ? "used by \(projectsUsingPnpm) projects" : nil, action: "Prune",
                         clean: .command(tool: "pnpm", args: ["store", "prune"])))
             }
-            let old = Self.oldStores(besides: store, fileManager: fileManager)
+            let old = storesFolder(of: store) == nil ? [] : Self.oldStores(besides: store, fileManager: fileManager)
             if !old.isEmpty {
                 entries.append(
                     CacheEntry(
@@ -169,8 +169,9 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
         case .deleteFolders(let folders):
             guard entry.id == "pnpm-old" else { throw CleanupError.notEligible(entry.id) }
             guard let store = await pnpmStore() else { throw CleanupError.failed("pnpm did not say where its store is") }
-            let root = (store as NSString).deletingLastPathComponent
-            guard let stores = Self.resolved(root) else { throw CleanupError.pathEscapes(root) }
+            guard let stores = storesFolder(of: store) else {
+                throw CleanupError.pathEscapes((store as NSString).deletingLastPathComponent)
+            }
             let current = canonicalPath(store)
             // Everything is checked before the first folder goes, so a bad one leaves all of them in place.
             var targets: [String] = []
@@ -240,6 +241,22 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
             Self.isInside(target, root), Self.isInside(target, home)
         else { throw CleanupError.pathEscapes(path) }
         return target
+    }
+
+    /// The folder that holds `store` and the stores of other versions, resolved, when it lies inside home and no link
+    /// below home leads to it; `nil` otherwise. Unlike the other caches its place is whatever pnpm says, so the part
+    /// below home is taken from that path and has to resolve to itself under the resolved home: a link at
+    /// `~/Library/pnpm` or at the folder of the stores leads somewhere else, and that must not pass as being the stores.
+    private func storesFolder(of store: String) -> String? {
+        let root = (store as NSString).deletingLastPathComponent
+        guard let resolvedRoot = Self.resolved(root), let resolvedHome = Self.resolved(home.path) else { return nil }
+        // pnpm may print the path under home as it is given or as the file system resolves it.
+        let below = [home.path, resolvedHome].lazy.compactMap { home -> String? in
+            if root == home { return "" }
+            return root.hasPrefix(home + "/") ? String(root.dropFirst(home.count)) : nil
+        }.first
+        guard let below, resolvedRoot == resolvedHome + below else { return nil }
+        return resolvedRoot
     }
 
     private static func resolved(_ path: String) -> String? {

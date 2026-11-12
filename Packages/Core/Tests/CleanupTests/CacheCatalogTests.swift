@@ -455,6 +455,43 @@ struct CacheCatalogTests {
         #expect(FileManager.default.fileExists(atPath: machine.path("Library/pnpm/store/v3")))
     }
 
+    @Test func oldPnpmStoresBehindALinkInsideHomeAreNotListedNorDeleted() async throws {
+        let machine = try Machine()
+        // The folder of the stores is a link to another folder in home; pnpm reports the store through the link.
+        let stores = machine.path("Library/pnpm/store")
+        let elsewhere = machine.path("Elsewhere")
+        try FileManager.default.moveItem(atPath: stores, toPath: elsewhere)
+        try FileManager.default.createSymbolicLink(atPath: stores, withDestinationPath: elsewhere)
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let forged = CacheEntry(
+            id: "pnpm-old", group: .packages, title: "Old pnpm stores", paths: [machine.oldStore], note: nil,
+            action: "Clean", clean: .deleteFolders([machine.oldStore]))
+
+        let ids = await catalog.entries(projectsUsingPnpm: 0).map(\.id)
+        await #expect(throws: CleanupError.pathEscapes(stores)) { try await catalog.clean(forged) }
+
+        #expect(ids.contains("pnpm"))
+        #expect(!ids.contains("pnpm-old"))
+        #expect(FileManager.default.fileExists(atPath: elsewhere + "/v10"))
+        #expect(FileManager.default.fileExists(atPath: elsewhere + "/v3"))
+    }
+
+    @Test func oldPnpmStoresAreListedWhenPnpmReportsTheResolvedHome() async throws {
+        let machine = try Machine()
+        let resolvedHome = try #require(realpath(machine.home.path, nil).map { String(cString: $0) })
+        var answers = try machine.answers()
+        answers["pnpm store path"] = ok(resolvedHome + "/Library/pnpm/store/v11\n")
+        let runner = FakeDocker(installed: machine.tools, answers: answers)
+        let catalog = machine.catalog(runner)
+
+        let old = try #require(await catalog.entries(projectsUsingPnpm: 0).first { $0.id == "pnpm-old" })
+        try await catalog.clean(old)
+
+        #expect(!FileManager.default.fileExists(atPath: machine.oldStore))
+        #expect(FileManager.default.fileExists(atPath: machine.store))
+    }
+
     @Test func aFailedCommandSaysWhatTheToolSaid() async throws {
         let machine = try Machine()
         var answers = try machine.answers()
