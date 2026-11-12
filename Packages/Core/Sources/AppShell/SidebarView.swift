@@ -8,6 +8,7 @@ enum SidebarItem: Hashable {
     case projects
     case readyToRemove
     case processes
+    case caches
     case repository(String)
 }
 
@@ -45,6 +46,8 @@ struct SidebarView: View {
             Label("Processes", systemImage: "waveform.path.ecg")
                 .badge(ProcessesPage(projects: projects).sections.count)
                 .tag(SidebarItem.processes)
+            Label("Caches and Docker", systemImage: "cylinder.split.1x2")
+                .tag(SidebarItem.caches)
             Section("Repositories") {
                 ForEach(projects) { project in
                     Label(project.name, systemImage: "folder")

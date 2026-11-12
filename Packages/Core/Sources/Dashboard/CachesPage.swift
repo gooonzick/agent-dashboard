@@ -330,7 +330,7 @@ public enum CachesPresenter {
     }
 
     /// `path` with `~` for `home`.
-    static func abbreviated(_ path: String, home: String) -> String {
+    public static func abbreviated(_ path: String, home: String) -> String {
         guard !home.isEmpty, home != "/", isInside(path, home) else { return path }
         return "~" + path.dropFirst(home.count)
     }

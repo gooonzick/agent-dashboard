@@ -1,4 +1,5 @@
 import AppKit
+import Cleanup
 import CoreModels
 import Dashboard
 import Foundation
@@ -70,6 +71,38 @@ import Testing
         #expect(try distinctColours(of: image) > 20)
     }
 
+    /// Caches and Docker as in the mockup: colima stopped, two build outputs, six package caches and Xcode, with the
+    /// inspector closed.
+    @Test(arguments: [false, true]) func theCachesPageDraws(dark: Bool) throws {
+        let image = try renderCaches(CachesFixtures.state, dark: dark)
+        _ = try write(image, name: "caches-\(dark ? "dark" : "light").png")
+        #expect(try distinctColours(of: image) > 20)
+    }
+
+    /// The same page with the VM running, what it holds, a build output that a process uses, and a cache being
+    /// measured.
+    @Test func theCachesPageWithDockerRunningDraws() throws {
+        let image = try renderCaches(CachesFixtures.running, users: CachesFixtures.users, dark: false)
+        _ = try write(image, name: "caches-docker-running-light.png")
+        #expect(try distinctColours(of: image) > 20)
+    }
+
+    /// The sheet for DerivedData while Xcode runs, and the one for the stopped containers.
+    @Test func theCleanupSheetDraws() throws {
+        let derived = try #require(CachesFixtures.state.caches.first { $0.id == "derived-data" })
+        let sheet = CleanupSheet(
+            model: CleanupSheetModel(CleanupAsk(.cache(derived), xcodeIsRunning: { true })), cancel: {}, confirm: {})
+        let image = try snapshot(sheet.background(Color(nsColor: .windowBackgroundColor)), dark: false)
+        _ = try write(image, name: "cleanup-sheet-light.png")
+        #expect(try distinctColours(of: image) > 10)
+
+        let pnpm = try #require(CachesFixtures.state.caches.first { $0.id == "pnpm" })
+        let prune = CleanupSheet(model: CleanupSheetModel(CleanupAsk(.cache(pnpm))), cancel: {}, confirm: {})
+        let other = try snapshot(prune.background(Color(nsColor: .windowBackgroundColor)), dark: true)
+        _ = try write(other, name: "cleanup-sheet-command-dark.png")
+        #expect(try distinctColours(of: other) > 10)
+    }
+
     /// The first-run window.
     @Test(arguments: [false, true]) func theOnboardingDraws(dark: Bool) throws {
         let view = OnboardingView(start: {}).frame(width: 900, height: 560)
@@ -91,6 +124,14 @@ import Testing
             sidebar: sidebar,
             selection: selection, disk: Fixtures.disk, readsDisk: false)
         return try snapshot(main, size: size, dark: dark)
+    }
+
+    private func renderCaches(_ state: CleanupState, users: [String: String] = [:], dark: Bool) throws -> NSImage {
+        let main = MainView(
+            projects: Fixtures.projects, ready: Fixtures.ready, scanState: .idle, lastUpdated: Date(), isBusy: false,
+            fetch: {}, refresh: {}, removal: .inert, cleanup: .showing(state, users: users), sidebar: .caches,
+            showsInspector: false, disk: Fixtures.disk, readsDisk: false)
+        return try snapshot(main, size: NSSize(width: 1440, height: 900), dark: dark)
     }
 
     /// The same three panes side by side with no split view: the split view's translucent sidebar and inspector are
@@ -379,4 +420,93 @@ enum Fixtures {
             footprintBytes: bytes, startDate: Date(timeIntervalSinceNow: -3_600), listeningPorts: [])
         return ProcessGroup(kind: kind, title: title, leader: leader, members: [])
     }
+}
+
+/// What Caches and Docker shows in the mockup. The paths are under the real home folder, so the page shows them with
+/// `~` as it would on this Mac; nothing reads them.
+enum CachesFixtures {
+    static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private static let library = home + "/Library"
+    private static let gigabyte: UInt64 = 1_000_000_000
+    private static let gibibyte: UInt64 = 1 << 30
+
+    static let colima = DockerRuntime(
+        kind: .colima, context: "colima", profile: "default", isRunning: false,
+        diskPath: home + "/.colima/_lima/_disks/colima/datadisk", diskLimit: 100 * gibibyte, cpus: 4,
+        memory: 8 * gibibyte)
+
+    static let caches: [CacheEntry] = [
+        CacheEntry(
+            id: "pnpm", group: .packages, title: "pnpm store", paths: [library + "/pnpm/store"],
+            note: "used by 34 projects", action: "Prune", clean: .command(tool: "pnpm", args: ["store", "prune"])),
+        CacheEntry(
+            id: "homebrew", group: .packages, title: "Homebrew", paths: [library + "/Caches/Homebrew"], note: nil,
+            action: "Clean", clean: .command(tool: "brew", args: ["cleanup", "--prune=all", "-s"])),
+        CacheEntry(
+            id: "go", group: .packages, title: "Go modules and build cache",
+            paths: [home + "/go/pkg/mod", library + "/Caches/go-build"], note: nil, action: "Clean",
+            clean: .command(tool: "go", args: ["clean", "-modcache", "-cache"])),
+        CacheEntry(
+            id: "npm", group: .packages, title: "npm", paths: [home + "/.npm/_cacache"], note: nil, action: "Clean",
+            clean: .deleteContents(of: home + "/.npm/_cacache")),
+        CacheEntry(
+            id: "playwright", group: .packages, title: "Playwright browsers", paths: [library + "/Caches/ms-playwright"],
+            note: nil, action: "Clean", clean: .deleteContents(of: library + "/Caches/ms-playwright")),
+        CacheEntry(
+            id: "cocoapods", group: .packages, title: "CocoaPods", paths: [library + "/Caches/CocoaPods"], note: nil,
+            action: "Clean", clean: .deleteContents(of: library + "/Caches/CocoaPods")),
+        CacheEntry(
+            id: "derived-data", group: .xcode, title: "DerivedData", paths: [library + "/Developer/Xcode/DerivedData"],
+            note: nil, action: "Clean", clean: .deleteContents(of: library + "/Developer/Xcode/DerivedData")),
+        CacheEntry(
+            id: "simulators", group: .xcode, title: "Simulators", paths: [library + "/Developer/CoreSimulator/Devices"],
+            note: nil, action: "Delete Unavailable", clean: nil),
+    ]
+
+    static let outputs: [BuildOutput] = [
+        BuildOutput(
+            path: "/Users/me/Development/meetily/target", worktree: "/Users/me/Development/meetily",
+            title: "meetily/target", kind: "Rust build"),
+        BuildOutput(
+            path: "/Users/me/Development/minuta/build", worktree: "/Users/me/Development/minuta",
+            title: "minuta/build", kind: "Xcode DerivedData copy"),
+    ]
+
+    static let sizes: [String: UInt64] = [
+        CleanupState.dockerDiskKey: 20_500_000_000, "pnpm": 13_800_000_000, "homebrew": 4_900_000_000,
+        "go": 5_700_000_000, "npm": 4_400_000_000, "playwright": 2_000_000_000, "cocoapods": 1_300_000_000,
+        "derived-data": 12_200_000_000, "simulators": 10_500_000_000,
+        "/Users/me/Development/meetily/target": 13_800_000_000, "/Users/me/Development/minuta/build": 1_300_000_000,
+    ]
+
+    static let state = CleanupState(
+        docker: .runtime(colima), caches: caches, buildOutputs: outputs, sizes: sizes, loadedAt: Date())
+
+    /// The VM runs; the pnpm store is being measured, and Homebrew cleaned.
+    static let running: CleanupState = {
+        let runtime = DockerRuntime(
+            kind: .colima, context: "colima", profile: "default", isRunning: true, diskPath: colima.diskPath,
+            diskLimit: colima.diskLimit, cpus: colima.cpus, memory: colima.memory)
+        let inventory = DockerInventory(
+            images: [
+                DockerImage(id: "1", name: "postgres:16", size: 450_000_000, isUnused: false),
+                DockerImage(id: "2", name: "redis:7", size: 140_000_000, isUnused: false),
+                DockerImage(id: "3", name: "node:20", size: 1_100_000_000, isUnused: true),
+                DockerImage(id: "4", name: "localstack/localstack:3", size: 1_300_000_000, isUnused: true),
+            ],
+            containers: [
+                DockerContainer(
+                    id: "a", name: "dashboard-db-1", image: "postgres:16", isRunning: true, size: 0,
+                    project: "/Users/me/Development/dashboard"),
+                DockerContainer(id: "b", name: "redis", image: "redis:7", isRunning: false, size: 4_000_000, project: nil),
+            ],
+            volumesSize: 2_300_000_000, buildCacheSize: 7_900_000_000)
+        var measured = sizes
+        measured["pnpm"] = nil
+        return CleanupState(
+            docker: .runtime(runtime), inventory: inventory, caches: caches, buildOutputs: outputs, sizes: measured,
+            working: ["homebrew"], loadedAt: Date())
+    }()
+
+    static let users = ["/Users/me/Development/meetily/target": "vite"]
 }

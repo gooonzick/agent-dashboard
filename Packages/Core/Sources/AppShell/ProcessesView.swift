@@ -51,55 +51,11 @@ private struct MemoryByProject: View {
                 Spacer()
                 InUseText(page: page, memoryInUse: memoryInUse)
             }
-            bar
-            legend
+            SegmentBar(
+                segments: page.bar, colour: ProcessesView.colour, size: SizeFormat.memory,
+                select: { selection = $0 })
         }
     }
-
-    private var bar: some View {
-        GeometryReader { proxy in
-            let total = page.bar.reduce(0.0) { $0 + Double($1.bytes) }
-            let room = max(0, proxy.size.width - Self.gap * CGFloat(max(page.bar.count - 1, 0)))
-            HStack(spacing: Self.gap) {
-                ForEach(Array(page.bar.enumerated()), id: \.offset) { index, segment in
-                    Button {
-                        if let worktree = segment.worktree { selection = worktree }
-                    } label: {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(ProcessesView.colour(of: segment, at: index))
-                            .frame(width: total > 0 ? room * Double(segment.bytes) / total : 0)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(segment.worktree == nil)
-                }
-            }
-        }
-        .frame(height: 8)
-        // The legend says the same, in words and as buttons.
-        .accessibilityHidden(true)
-    }
-
-    private var legend: some View {
-        HStack(spacing: 16) {
-            ForEach(Array(page.bar.enumerated()), id: \.offset) { index, segment in
-                let entry = HStack(spacing: 5) {
-                    Circle().fill(ProcessesView.colour(of: segment, at: index)).frame(width: 8, height: 8)
-                    Text(segment.label)
-                    Text(SizeFormat.memory(segment.bytes)).monospacedDigit().foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                if let worktree = segment.worktree {
-                    Button { selection = worktree } label: { entry.contentShape(.rect) }
-                        .buttonStyle(.plain)
-                } else {
-                    entry.accessibilityElement(children: .combine)
-                }
-            }
-        }
-        .font(.callout)
-    }
-
-    private static let gap: CGFloat = 2
 }
 
 /// How much of the memory of the Mac the worktrees use. The one view that calls `memoryInUse`, so that a sample draws

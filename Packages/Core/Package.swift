@@ -29,7 +29,9 @@ let package = Package(
                 "CoreModels", "Shell", "Discovery", "GitKit", "Hosting", "DiskUsage", "ProcessKit", "Safety", "Cleanup",
             ],
             swiftSettings: strict),
-        .target(name: "AppShell", dependencies: ["CoreModels", "Dashboard", "Hosting", "Safety"], swiftSettings: strict),
+        .target(
+            name: "AppShell", dependencies: ["CoreModels", "Dashboard", "Hosting", "Safety", "Cleanup"],
+            swiftSettings: strict),
         // Helpers shared by the test targets: temporary folders, real git repositories to run tests against, and
         // processes that exist only in a test.
         .target(
@@ -56,7 +58,7 @@ let package = Package(
             resources: [.copy("Fixtures")], swiftSettings: strict),
         .testTarget(name: "SafetyTests", dependencies: ["Safety", "CoreModels"], swiftSettings: strict),
         .testTarget(
-            name: "AppShellTests", dependencies: ["AppShell", "Dashboard", "CoreModels", "Hosting", "Safety"],
+            name: "AppShellTests", dependencies: ["AppShell", "Dashboard", "CoreModels", "Hosting", "Safety", "Cleanup"],
             swiftSettings: strict),
         .testTarget(
             name: "DashboardTests",

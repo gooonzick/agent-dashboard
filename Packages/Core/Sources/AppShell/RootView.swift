@@ -57,6 +57,19 @@ public struct RootView: View {
                 stop: { groups, row in await store.stop(groups, of: row) },
                 skipsConfirmation: { store.settings.skipConfirmForMergedPushed },
                 skipConfirmationFromNowOn: { store.settings.skipConfirmForMergedPushed = true }),
+            // A read as well: sizes arrive one by one while the page is open, and only that page shows them.
+            cleanup: CleanupActions(
+                read: { (store.cleanup, store.buildOutputUsers) },
+                load: { await store.loadCleanup(force: $0) },
+                startDocker: { await store.startDocker() },
+                clean: { target in
+                    switch target {
+                    case .cache(let entry): await store.clean(cache: entry)
+                    case .output(let output): await store.clean(output: output)
+                    case .unusedImages: await store.removeUnusedImages()
+                    case .stoppedContainers: await store.removeStoppedContainers()
+                    }
+                }),
             disk: nil, readsDisk: true
         )
         // Once in a run of the app: the window appears again after it was closed, and that is no reason to scan the
@@ -122,6 +135,8 @@ struct MainView: View {
     let refreshSizes: ([String]) -> Void
     let refresh: () -> Void
     let removal: RemovalActions
+    /// What Caches and Docker reads and asks of the store. Only the views of that page call `read`.
+    let cleanup: CleanupActions
 
     @State private var sidebar: SidebarItem?
     @State private var selection: String?
@@ -144,15 +159,20 @@ struct MainView: View {
     @State private var failures: [String] = []
     /// A stop that waits for the user to confirm it.
     @State private var stopAsk: StopConfirmation?
-    /// What the last stop that did not go through left running, for its alert.
-    @State private var stopFailure: (title: String, message: String)?
+    /// What the last stop that did not go through left running, or why the last clean or start of Docker failed, for
+    /// its alert.
+    @State private var failure: (title: String, message: String)?
+    /// A clean on Caches and Docker that waits for the user to confirm it.
+    @State private var cleanupAsk: CleanupAsk?
+    /// Whether Caches and Docker has been shown: the first time, it loads; after that only Refresh does.
+    @State private var loadedCaches = false
     @FocusState private var searchIsFocused: Bool
 
     init(
         projects: [ProjectRow], ready: [WorktreeRow], scanState: ScanState, lastUpdated: Date?, isBusy: Bool,
         stopping: Set<Int32> = [], processSample: @escaping () -> ProcessSample = { (nil, nil) },
         fetch: @escaping () -> Void, refreshSizes: @escaping ([String]) -> Void = { _ in },
-        refresh: @escaping () -> Void, removal: RemovalActions,
+        refresh: @escaping () -> Void, removal: RemovalActions, cleanup: CleanupActions = .inert,
         sidebar: SidebarItem = .projects, selection: String? = nil, showsInspector: Bool = true, disk: StartupDisk?,
         readsDisk: Bool
     ) {
@@ -167,6 +187,7 @@ struct MainView: View {
         self.refreshSizes = refreshSizes
         self.refresh = refresh
         self.removal = removal
+        self.cleanup = cleanup
         _sidebar = State(initialValue: sidebar)
         _selection = State(initialValue: selection)
         _showsInspector = State(initialValue: showsInspector)
@@ -184,10 +205,8 @@ struct MainView: View {
             detail(processes)
                 .navigationTitle(title)
                 .modifier(
-                    WindowSubtitle(
-                        text: sidebar == .readyToRemove ? "" : subtitle, processes: processes,
-                        sampledAt: { processSample().sampledAt }))
-                .searchable(text: $query, prompt: sidebar == .processes ? "Search processes" : "Search")
+                    WindowSubtitle(text: subtitle, processes: processes, sampledAt: { processSample().sampledAt }))
+                .searchable(text: $query, prompt: searchPrompt)
                 .searchFocused($searchIsFocused)
                 .toolbar { toolbar }
                 .inspector(isPresented: $showsInspector) {
@@ -215,6 +234,10 @@ struct MainView: View {
                 })
                 .task { refreshSizes(ask.rows.map(\.id)) }
         }
+        .sheet(item: $cleanupAsk) { ask in
+            CleanupSheet(
+                model: CleanupSheetModel(ask), cancel: { cleanupAsk = nil }, confirm: { performCleanup(ask) })
+        }
         .alert(
             "Some worktrees were not removed",
             isPresented: Binding(get: { !failures.isEmpty }, set: { if !$0 { failures = [] } })
@@ -233,16 +256,21 @@ struct MainView: View {
             Text(ask.message)
         }
         .alert(
-            stopFailure?.title ?? "",
-            isPresented: Binding(get: { stopFailure != nil }, set: { if !$0 { stopFailure = nil } })
+            failure?.title ?? "",
+            isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })
         ) {
         } message: {
-            Text(stopFailure?.message ?? "")
+            Text(failure?.message ?? "")
         }
         .onChange(of: projects) { _, projects in
             if case .repository(let path) = sidebar, !projects.contains(where: { $0.path == path }) {
                 sidebar = .projects
             }
+        }
+        .onChange(of: sidebar, initial: true) { _, item in
+            guard item == .caches, !loadedCaches else { return }
+            loadedCaches = true
+            Task { await cleanup.load(false) }
         }
         .task {
             while !Task.isCancelled {
@@ -269,6 +297,9 @@ struct MainView: View {
             }
         case .processes:
             processesView(all: processes ?? ProcessesPage(projects: projects))
+        case .caches:
+            CachesView(
+                actions: cleanup, query: query, ask: { cleanupAsk = CleanupAsk($0) }, startDocker: startDocker)
         case .projects:
             projectsView(repoPath: nil)
         case .repository(let path):
@@ -381,10 +412,34 @@ struct MainView: View {
         stopAsk = nil
         Task {
             guard let failure = await removal.stop(ask.groups, ask.row) else { return }
-            stopFailure = (
+            self.failure = (
                 RowPresenter.stopFailureTitle(failure), RowPresenter.stopFailureMessage(failure, groups: ask.groups)
             )
         }
+    }
+
+    // MARK: Cleaning
+
+    private func performCleanup(_ ask: CleanupAsk) {
+        cleanupAsk = nil
+        let title = CleanupSheetModel(ask).failureTitle
+        Task {
+            guard let message = await cleanup.clean(ask.target) else { return }
+            failure = (title, message)
+        }
+    }
+
+    /// "Start and inspect", which asks nothing first: starting a VM deletes nothing.
+    private func startDocker() {
+        Task {
+            guard let message = await cleanup.startDocker() else { return }
+            failure = ("Could not start Docker", message)
+        }
+    }
+
+    /// Refresh on Caches and Docker: everything listed and measured again.
+    private func refreshCaches() {
+        Task { await cleanup.load(true) }
     }
 
     // MARK: Commands
@@ -394,15 +449,20 @@ struct MainView: View {
         var commands = WindowCommands(
             showProjects: { sidebar.wrappedValue = .projects },
             showReadyToRemove: { sidebar.wrappedValue = .readyToRemove })
-        let sheetIsOpen = ask != nil
+        let sheetIsOpen = ask != nil || cleanupAsk != nil
         if WindowCommands.offersRefresh(isBusy: isBusy, isScanning: scanState.isScanning, sheetIsOpen: sheetIsOpen) {
             commands.refresh = refresh
             commands.fetchAll = fetch
         }
+        // Refresh there lists and measures the caches, which a scan or a fetch does not stand in the way of. A second
+        // one while a load runs does nothing (`DashboardStore.loadCleanup`).
+        if self.sidebar == .caches {
+            commands.refresh = sheetIsOpen ? nil : { refreshCaches() }
+        }
         if let row = selectedRow,
             WindowCommands.offersRemove(
                 selectionIsRemovable: rowActions.canRemove(row), searchIsFocused: searchIsFocused,
-                sheetIsOpen: sheetIsOpen, onProcesses: self.sidebar == .processes)
+                sheetIsOpen: sheetIsOpen, onProcesses: self.sidebar == .processes, onCaches: self.sidebar == .caches)
         {
             commands.removeSelection = { requestRemoval([row], fromRowButton: false) }
         }
@@ -415,11 +475,23 @@ struct MainView: View {
         switch sidebar {
         case .readyToRemove: "Ready to remove"
         case .processes: "Processes"
+        case .caches: "Caches and Docker"
         default: "Projects"
         }
     }
 
+    private var searchPrompt: String {
+        switch sidebar {
+        case .processes: "Search processes"
+        case .caches: "Search caches"
+        default: "Search"
+        }
+    }
+
+    /// Nothing on Ready to remove; on Processes `WindowSubtitle` says what runs instead.
     private var subtitle: String {
+        if sidebar == .readyToRemove { return "" }
+        if sidebar == .caches { return "Everything heavy that lives outside your project folders" }
         let worktrees = projects.reduce(0) { $0 + $1.worktrees.count }
         var text = "\(projects.count) repositories · \(worktrees) worktrees"
         if let lastUpdated {
@@ -443,9 +515,13 @@ struct MainView: View {
             Button("Fetch", systemImage: "arrow.down.circle", action: fetch)
                 .help("Fetch")
                 .disabled(isBusy || scanState.isScanning)
-            Button("Refresh", systemImage: "arrow.clockwise", action: refresh)
-                .help("Refresh")
-                .disabled(isBusy || scanState.isScanning)
+            if sidebar == .caches {
+                CachesRefreshButton(actions: cleanup, refresh: refreshCaches)
+            } else {
+                Button("Refresh", systemImage: "arrow.clockwise", action: refresh)
+                    .help("Refresh")
+                    .disabled(isBusy || scanState.isScanning)
+            }
         }
         ToolbarItem {
             Button("Inspector", systemImage: "sidebar.right") { showsInspector.toggle() }

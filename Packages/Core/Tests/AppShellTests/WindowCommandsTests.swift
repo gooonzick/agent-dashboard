@@ -21,6 +21,13 @@ import Testing
                 selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: false, onProcesses: true))
     }
 
+    @Test func removeIsNotOfferedOnTheCachesPage() {
+        // The page shows no worktree; what it deletes goes through its own sheet.
+        #expect(
+            !WindowCommands.offersRemove(
+                selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: false, onCaches: true))
+    }
+
     @Test func nothingThatChangesTheRowsIsOfferedWhileTheSheetIsOpen() {
         #expect(!WindowCommands.offersRemove(selectionIsRemovable: true, searchIsFocused: false, sheetIsOpen: true))
         #expect(!WindowCommands.offersRefresh(isBusy: false, isScanning: false, sheetIsOpen: true))
