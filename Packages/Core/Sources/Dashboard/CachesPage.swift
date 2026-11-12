@@ -20,6 +20,11 @@ public struct CachesPage: Equatable, Sendable {
     /// In the order of the catalog.
     public let packages: [CleanupRow]
     public let xcode: [CleanupRow]
+    /// Every row and the disk of the VM, filtered out or not, has its size: `total` is the whole amount, not a part of
+    /// it that is still growing. True as well when there is nothing to measure.
+    public let isMeasured: Bool
+    /// There is nothing to measure at all: no cache, no build output and no disk of a Docker VM.
+    public let isEmpty: Bool
 
     /// The caches whose clean frees only part of them, which `cleanable` does not count: `pnpm store prune` removes
     /// the packages no project uses, and the simulators that are deleted are the unavailable ones (Ruling 10).
@@ -65,6 +70,12 @@ public struct CachesPage: Equatable, Sendable {
         packages = shownCaches.filter { $1.group == .packages }.map(\.0)
         xcode = shownCaches.filter { $1.group == .xcode }.map(\.0)
         docker = DockerSection(state: state)
+        var keys = state.caches.map(\.id) + state.buildOutputs.map(\.path)
+        if case .runtime(let runtime)? = state.docker, runtime.diskPath != nil {
+            keys.append(CleanupState.dockerDiskKey)
+        }
+        isMeasured = keys.allSatisfy { sizes[$0] != nil }
+        isEmpty = keys.isEmpty
 
         let outputBytes = state.buildOutputs.reduce(UInt64(0)) { $0.adding(sizes[$1.path]) }
         let cacheBytes = state.caches.reduce(UInt64(0)) { $0.adding(sizes[$1.id]) }
@@ -273,8 +284,9 @@ public struct DockerContainerLine: Identifiable, Equatable, Sendable {
 /// The words of the Caches and Docker page that are not a row's own.
 public enum CachesPresenter {
     /// `("113 GB", "in caches, toolchains and VMs · about 70 GB can be cleaned safely")`. With nothing to clean, the
-    /// detail is the first part alone.
+    /// detail is the first part alone; with nothing found, it says so.
     public static func headline(_ page: CachesPage) -> (total: String, detail: String) {
+        guard !page.isEmpty else { return ("0 GB", "No caches, build outputs or Docker VM found") }
         let detail = "in caches, toolchains and VMs"
         guard page.cleanable > 0 else { return (amount(page.total), detail) }
         return (amount(page.total), detail + " · about \(amount(page.cleanable)) can be cleaned safely")

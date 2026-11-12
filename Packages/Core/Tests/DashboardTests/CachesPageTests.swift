@@ -52,6 +52,35 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         #expect(CachesPresenter.headline(nothing).detail == "in caches, toolchains and VMs")
     }
 
+    @Test func theTotalIsMeasuredOnceEveryRowAndTheDiskHaveASize() {
+        let caches = [cache("npm"), cache("go")]
+        let outputs = [output("target", in: "/x/wt")]
+        func page(_ sizes: [String: UInt64], docker: DockerStatus? = colima(running: false)) -> CachesPage {
+            CachesPage(
+                state: CleanupState(docker: docker, caches: caches, buildOutputs: outputs, sizes: sizes), users: [:],
+                query: "npm", home: home)
+        }
+        let all: [String: UInt64] = [
+            "npm": gigabyte, "go": gigabyte, "/x/wt/target": gigabyte, CleanupState.dockerDiskKey: gigabyte,
+        ]
+
+        // A row that the query hides counts too: the total is of everything.
+        #expect(page(all).isMeasured)
+        #expect(!page(all.filter { $0.key != "go" }).isMeasured)
+        #expect(!page(all.filter { $0.key != CleanupState.dockerDiskKey }).isMeasured)
+        // Without a runtime there is no disk to wait for.
+        #expect(page(all.filter { $0.key != CleanupState.dockerDiskKey }, docker: .notInstalled).isMeasured)
+        #expect(!page([:]).isEmpty)
+    }
+
+    @Test func aMacWithNothingToMeasureSaysSo() {
+        let page = CachesPage(state: CleanupState(docker: .notInstalled, loadedAt: Date()), users: [:], home: home)
+
+        #expect(page.isMeasured)
+        #expect(page.isEmpty)
+        #expect(CachesPresenter.headline(page) == ("0 GB", "No caches, build outputs or Docker VM found"))
+    }
+
     @Test func pnpmAndTheSimulatorsAreShownButNotCountedAsCleanable() {
         let state = CleanupState(
             caches: [cache("pnpm", action: "Prune"), cache("simulators", .xcode, action: "Delete Unavailable")],
