@@ -357,7 +357,7 @@ struct CacheCatalogTests {
             id: "pnpm-old", group: .packages, title: "Old pnpm stores", paths: [link], note: nil, action: "Clean",
             clean: .deleteFolders([link]))
 
-        await #expect(throws: CleanupError.notEligible(link)) { try await machine.catalog(runner).clean(forged) }
+        await #expect(throws: CleanupError.pathEscapes(link)) { try await machine.catalog(runner).clean(forged) }
 
         #expect(FileManager.default.fileExists(atPath: renamed + "/v11"))
     }
@@ -402,6 +402,57 @@ struct CacheCatalogTests {
         let entries = await machine.catalog(runner).entries(projectsUsingPnpm: 0)
 
         #expect(entries.first { $0.id == "pnpm" }?.paths == [machine.store])
+    }
+
+    @Test func aCacheThatIsALinkToAFolderInsideHomeIsNotCleaned() async throws {
+        let machine = try Machine()
+        let documents = machine.path("Documents")
+        try FileManager.default.createDirectory(atPath: documents, withIntermediateDirectories: true)
+        let precious = documents + "/keep.txt"
+        try Data("x".utf8).write(to: URL(filePath: precious))
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let playwright = try #require(await catalog.entries(projectsUsingPnpm: 0).first { $0.id == "playwright" })
+        let link = machine.path("Library/Caches/ms-playwright")
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: documents)
+
+        await #expect(throws: CleanupError.pathEscapes(link)) { try await catalog.clean(playwright) }
+
+        #expect(FileManager.default.fileExists(atPath: precious))
+    }
+
+    @Test func aCacheBelowAFolderThatIsALinkInsideHomeIsNotCleaned() async throws {
+        let machine = try Machine()
+        let elsewhere = machine.path("Elsewhere")
+        try FileManager.default.createDirectory(
+            atPath: elsewhere + "/CocoaPods", withIntermediateDirectories: true)
+        let precious = elsewhere + "/CocoaPods/keep.txt"
+        try Data("x".utf8).write(to: URL(filePath: precious))
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let catalog = machine.catalog(runner)
+        let pods = try #require(await catalog.entries(projectsUsingPnpm: 0).first { $0.id == "cocoapods" })
+        let caches = machine.path("Library/Caches")
+        try FileManager.default.removeItem(atPath: caches)
+        try FileManager.default.createSymbolicLink(atPath: caches, withDestinationPath: elsewhere)
+
+        await #expect(throws: CleanupError.pathEscapes(caches + "/CocoaPods")) { try await catalog.clean(pods) }
+
+        #expect(FileManager.default.fileExists(atPath: precious))
+    }
+
+    @Test func anOldPnpmStoreThatIsALinkToAnotherOneIsNotDeleted() async throws {
+        let machine = try Machine()
+        let link = machine.path("Library/pnpm/store/v7")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: machine.path("Library/pnpm/store/v3"))
+        let runner = FakeDocker(installed: machine.tools, answers: try machine.answers())
+        let forged = CacheEntry(
+            id: "pnpm-old", group: .packages, title: "Old pnpm stores", paths: [link], note: nil, action: "Clean",
+            clean: .deleteFolders([link]))
+
+        await #expect(throws: CleanupError.pathEscapes(link)) { try await machine.catalog(runner).clean(forged) }
+
+        #expect(FileManager.default.fileExists(atPath: machine.path("Library/pnpm/store/v3")))
     }
 
     @Test func aFailedCommandSaysWhatTheToolSaid() async throws {

@@ -170,16 +170,22 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
             guard entry.id == "pnpm-old" else { throw CleanupError.notEligible(entry.id) }
             guard let store = await pnpmStore() else { throw CleanupError.failed("pnpm did not say where its store is") }
             let root = (store as NSString).deletingLastPathComponent
+            guard let stores = Self.resolved(root) else { throw CleanupError.pathEscapes(root) }
             let current = canonicalPath(store)
             // Everything is checked before the first folder goes, so a bad one leaves all of them in place.
             var targets: [String] = []
             for folder in folders {
-                let target = try check(folder, within: root)
+                let target = try check(folder, within: stores)
+                // An old store that is a link is refused: the delete goes through the resolved path and would take
+                // the folder the link points to.
+                guard Self.resolved((folder as NSString).deletingLastPathComponent).map({
+                    $0 + "/" + (folder as NSString).lastPathComponent
+                }) == target else { throw CleanupError.pathEscapes(folder) }
                 // Strictly inside the folder of the stores, named like one, and neither the current store nor a
                 // folder that holds it or lies in it (the current store may itself be a symlink into an old one).
                 guard Self.isStoreVersion((target as NSString).lastPathComponent),
                     Self.isStoreVersion((folder as NSString).lastPathComponent),
-                    (target as NSString).deletingLastPathComponent == canonicalPath(root),
+                    (target as NSString).deletingLastPathComponent == stores,
                     !Self.isInside(target, current), !Self.isInside(current, target)
                 else { throw CleanupError.notEligible(folder) }
                 targets.append(target)
@@ -210,24 +216,27 @@ public struct CacheCatalog: CacheCataloging, @unchecked Sendable {
         }
     }
 
-    /// The folder a delete-based entry has to stay inside. It is fixed by the entry, not read from it, so an entry
-    /// that was altered cannot name another one.
+    /// The folder a delete-based entry has to stay inside. It is fixed by the id, not read from the entry, so an entry
+    /// that was altered cannot name another one. It is the resolved home plus a fixed path and is not resolved any
+    /// further: the folder itself or one above it that turned into a link leads somewhere else, and that must not
+    /// pass as being the cache.
     private func expectedRoot(of id: String) -> String? {
-        let library = home.path + "/Library"
+        let relative: String
         switch id {
-        case "npm": return home.path + "/.npm/_cacache"
-        case "playwright": return library + "/Caches/ms-playwright"
-        case "cocoapods": return library + "/Caches/CocoaPods"
-        case "derived-data": return library + "/Developer/Xcode/DerivedData"
+        case "npm": relative = "/.npm/_cacache"
+        case "playwright": relative = "/Library/Caches/ms-playwright"
+        case "cocoapods": relative = "/Library/Caches/CocoaPods"
+        case "derived-data": relative = "/Library/Developer/Xcode/DerivedData"
         default: return nil
         }
+        return Self.resolved(home.path).map { $0 + relative }
     }
 
-    /// `path` as the file system resolves it, when it equals `root` or lies inside it and lies inside `home`; refuses
-    /// otherwise. A symlink anywhere on the way that leads out makes the resolved path leave, and a path that cannot
+    /// `path` as the file system resolves it, when it equals `root` (taken as it is, not resolved) or lies inside it and
+    /// lies inside `home`; refuses otherwise. A symlink anywhere on the way that leads out makes the resolved path leave, and a path that cannot
     /// be resolved is refused too: a delete does not go ahead on a guess.
     private func check(_ path: String, within root: String) throws -> String {
-        guard let target = Self.resolved(path), let root = Self.resolved(root), let home = Self.resolved(home.path),
+        guard let target = Self.resolved(path), let home = Self.resolved(home.path),
             Self.isInside(target, root), Self.isInside(target, home)
         else { throw CleanupError.pathEscapes(path) }
         return target
