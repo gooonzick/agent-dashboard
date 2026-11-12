@@ -81,7 +81,7 @@ final class Scene {
 
     /// The time that `env.now` says.
     var now: Date { date.now }
-    func passTime(_ seconds: TimeInterval) { date.pass(seconds) }
+    nonisolated func passTime(_ seconds: TimeInterval) { date.pass(seconds) }
 
     func environment(reviews: (any ReviewLooking)? = nil, hosting: (any HostingDetecting)? = nil)
         -> DashboardEnvironment

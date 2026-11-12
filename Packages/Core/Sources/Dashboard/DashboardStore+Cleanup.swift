@@ -131,7 +131,8 @@ extension DashboardStore {
 
     /// "Start and inspect": starts the VM if it is not running, waits for it to run, asking every 2 seconds for up to
     /// 2 minutes, and then reads what it holds and measures its disk again. Returns what went wrong, for the user, or
-    /// `nil`.
+    /// `nil`. The 2 minutes are told by `env.now`, not by adding up the waits: asking Docker can itself take up to
+    /// 45 seconds when it does not answer.
     public func startDocker() async -> String? {
         guard case .runtime(let runtime)? = cleanup.docker else {
             return cleanup.docker.flatMap(CachesPresenter.dockerProblem(with:)) ?? "Docker did not answer"
@@ -143,19 +144,18 @@ extension DashboardStore {
         if !runtime.isRunning, let failure = await CleanupWork.start(runtime, with: env.docker) {
             return CachesPresenter.message(for: failure)
         }
-        var waited = Duration.zero
+        let deadline = env.now().addingTimeInterval(TimeInterval(Self.dockerStartLimit.components.seconds))
         while true {
             let status = await CleanupWork.status(of: env.docker)
             if case .runtime(let now) = status {
                 setDocker(status)
                 if now.isRunning { break }
             }
-            guard waited < Self.dockerStartLimit else {
+            guard env.now() < deadline else {
                 setDocker(status)
                 return "Docker did not start in 2 minutes"
             }
             do { try await env.sleep(Self.dockerStartPoll) } catch { return nil }
-            waited += Self.dockerStartPoll
         }
         updateCleanupTargets()
         measureCleanup([CleanupState.dockerDiskKey], first: true)

@@ -498,6 +498,7 @@ final class FakeDockerControl: DockerControlling {
         var inventory: DockerInventory?
         var startError: DockerError?
         var pruneError: DockerError?
+        var whileAsked: (@Sendable () -> Void)?
         var calls: [Call] = []
     }
 
@@ -514,12 +515,16 @@ final class FakeDockerControl: DockerControlling {
     func willHold(_ inventory: DockerInventory?) { state.withLock { $0.inventory = inventory } }
     func failStart(_ error: DockerError?) { state.withLock { $0.startError = error } }
     func failPrunes(_ error: DockerError?) { state.withLock { $0.pruneError = error } }
+    /// `action` runs every time `status()` is asked, as the time it takes: a test moves the date in it.
+    func whileAsked(_ action: (@Sendable () -> Void)?) { state.withLock { $0.whileAsked = action } }
 
     func status() async -> DockerStatus {
-        state.withLock { state in
+        let (status, action) = state.withLock { state in
             state.calls.append(.status)
-            return state.statuses.count > 1 ? state.statuses.removeFirst() : state.statuses[0]
+            return (state.statuses.count > 1 ? state.statuses.removeFirst() : state.statuses[0], state.whileAsked)
         }
+        action?()
+        return status
     }
 
     func inventory() async throws -> DockerInventory {

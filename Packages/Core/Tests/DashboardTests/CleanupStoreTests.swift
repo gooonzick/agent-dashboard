@@ -356,12 +356,36 @@ func output(_ relative: String, in worktree: String) -> BuildOutput {
         await store.loadCleanup()
 
         let starting = Task { await store.startDocker() }
-        #expect(await poll { scene.clock.sleepers == 1 })
-        await scene.clock.advance(by: .seconds(120))
+        // Each wait of 2 seconds takes 2 seconds of the date too.
+        for _ in 0..<60 {
+            #expect(await poll { scene.clock.sleepers == 1 })
+            scene.passTime(2)
+            await scene.clock.advance(by: .seconds(2))
+        }
 
         #expect(await starting.value == "Docker did not start in 2 minutes")
         #expect(scene.docker.count(.inventory) == 0)
         #expect(store.cleanup.working.isEmpty)
+    }
+
+    @Test func theTwoMinutesCountTheTimeDockerTakesToAnswer() async throws {
+        let scene = try machine()
+        let store = await scene.startedStore()
+        await store.loadCleanup()
+        let asked = scene.docker.count(.status)
+        // Docker that does not answer takes 45 seconds to say so, every time.
+        scene.docker.whileAsked { [scene] in scene.passTime(45) }
+
+        let starting = Task { await store.startDocker() }
+        for _ in 0..<2 {
+            #expect(await poll { scene.clock.sleepers == 1 })
+            await scene.clock.advance(by: .seconds(2))
+        }
+
+        #expect(await starting.value == "Docker did not start in 2 minutes")
+        // Asked at 0, 45 and 90 seconds in; the third answer comes after 2 minutes.
+        #expect(scene.docker.count(.status) - asked == 3)
+        #expect(scene.clock.sleepers == 0)
     }
 
     @Test func aFailedStartSaysWhatTheRuntimeSaid() async throws {
