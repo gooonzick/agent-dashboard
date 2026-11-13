@@ -5,13 +5,17 @@ import Safety
 
 /// One chip of the State column.
 public struct StateChip: Equatable, Sendable {
-    public let text: String
-    /// Whether it names something that stands in the way of removing the worktree.
-    public let warning: Bool
+    /// How loud the chip is. `quiet`: all is well, plain secondary text with no capsule. `neutral`: work
+    /// that is here and in the way of removing, a grey capsule. `warning`: what may be lost or cannot be known, an
+    /// orange one.
+    public enum Tone: Equatable, Sendable { case quiet, neutral, warning }
 
-    public init(text: String, warning: Bool) {
+    public let text: String
+    public let tone: Tone
+
+    public init(text: String, tone: Tone) {
         self.text = text
-        self.warning = warning
+        self.tone = tone
     }
 }
 
@@ -33,18 +37,27 @@ public enum RowPresenter {
     public static func stateChips(_ row: WorktreeRow) -> [StateChip] {
         switch row.eligibility {
         case .missing:
-            return [StateChip(text: "Missing", warning: true)]
+            return [StateChip(text: "Missing", tone: .warning)]
         case .blocked(let reasons):
-            return reasons.map { StateChip(text: text(of: $0), warning: true) }
+            let chips = reasons.map { StateChip(text: text(of: $0), tone: tone(of: $0)) }
+            // The warnings first: the table shows only the first chip.
+            return chips.filter { $0.tone == .warning } + chips.filter { $0.tone != .warning }
         case .mainWorktree:
-            guard let status = row.status else { return [StateChip(text: cantVerify, warning: true)] }
+            guard let status = row.status else { return [StateChip(text: cantVerify, tone: .warning)] }
             var chips: [StateChip] = []
-            if status.modified > 0 { chips.append(StateChip(text: changes(status.modified), warning: true)) }
-            if status.untracked > 0 { chips.append(StateChip(text: "\(status.untracked) untracked", warning: true)) }
-            return chips.isEmpty ? [StateChip(text: "Clean", warning: false)] : chips
+            if status.modified > 0 { chips.append(StateChip(text: changes(status.modified), tone: .neutral)) }
+            if status.untracked > 0 { chips.append(StateChip(text: "\(status.untracked) untracked", tone: .neutral)) }
+            return chips.isEmpty ? [StateChip(text: "Clean", tone: .quiet)] : chips
         case .ready, .manual:
-            return [StateChip(text: "Clean", warning: false)]
+            return [StateChip(text: "Clean", tone: .quiet)]
         }
+    }
+
+    /// What the State column shows: the first chip, how many more there are, and all of them for the help. Two or three
+    /// chips side by side were cut to `11 ch…` in a column of usual width.
+    public static func stateSummary(_ row: WorktreeRow) -> (chip: StateChip, more: Int, help: String) {
+        let chips = stateChips(row)
+        return (chips[0], chips.count - 1, chips.map(\.text).joined(separator: ", "))
     }
 
     private static func text(of reason: UnsavedReason) -> String {
@@ -57,6 +70,15 @@ public enum RowPresenter {
         case .notOnRemote, .commitsAfterMerge: "Not on remote"
         case .lockedManually: "Locked"
         case .cantVerify, .statusUnavailable: cantVerify
+        }
+    }
+
+    /// Commits on no remote are lost with the folder, and what git could not read may be anything: those warn. Changes,
+    /// untracked files and stashes are the work of every day, and a lock is the user's own.
+    private static func tone(of reason: UnsavedReason) -> StateChip.Tone {
+        switch reason {
+        case .unpushed, .notOnRemote, .commitsAfterMerge, .cantVerify, .statusUnavailable: .warning
+        case .modified, .untracked, .stash, .lockedManually: .neutral
         }
     }
 
@@ -220,7 +242,7 @@ public struct ReadyListing: Equatable, Sendable {
         return expanded ? "Show less" : "Show all \(total)"
     }
 
-    public var removeTitle: String { "Remove \(total)…" }
+    public var removeTitle: String { total == 1 ? "Remove 1 worktree…" : "Remove \(total) worktrees…" }
 }
 
 /// The filter above the table.

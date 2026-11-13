@@ -171,17 +171,19 @@ private struct CachesBlock: View {
                 NoRows(text: query.isEmpty ? "None on this Mac" : "No match for “\(query)”")
             }
             ForEach(rows) { row in
-                CleanupRowView(row: row, symbol: Self.symbol(of: row), showsReason: false) { clean(row) }
+                CleanupRowView(row: row, symbol: Self.symbol(of: row)) { clean(row) }
                 if row.id != rows.last?.id { Divider() }
             }
         }
     }
 
-    private static func symbol(of row: CleanupRow) -> String {
+    /// Xcode's two rows tell themselves apart by their symbol. The package caches would all have the same box, which
+    /// says nothing and takes width from the path, so they have none.
+    private static func symbol(of row: CleanupRow) -> String? {
         switch row.id {
         case CleanupSheetModel.derivedDataID: "hammer"
         case "simulators": "iphone"
-        default: "shippingbox"
+        default: nil
         }
     }
 }
@@ -207,7 +209,8 @@ private struct BuildOutputsBlock: View {
                 NoRows(text: query.isEmpty ? "No build outputs in your projects" : "No match for “\(query)”")
             }
             ForEach(shown) { row in
-                CleanupRowView(row: row, symbol: "folder.badge.gearshape", showsReason: true) { clean(row) }
+                // Every build output is a folder: the same symbol on each says nothing.
+                CleanupRowView(row: row, symbol: nil) { clean(row) }
                 if row.id != shown.last?.id || toggle != nil { Divider() }
             }
             if let toggle {
@@ -231,15 +234,14 @@ private struct BuildOutputsBlock: View {
 /// A build output or a cache: what it is, where, what it takes, and its button.
 private struct CleanupRowView: View {
     let row: CleanupRow
-    let symbol: String
-    /// Whether the reason the button is off is said in the row as well as in its help: a build output that a process
-    /// uses.
-    let showsReason: Bool
+    let symbol: String?
     let clean: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18).accessibilityHidden(true)
+            if let symbol {
+                Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18).accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.title).lineLimit(1).truncationMode(.middle)
                 Text(row.subtitle)
@@ -248,10 +250,17 @@ private struct CleanupRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            // The path before the reason: the reason is in the help as well, the path nowhere else.
+            .layoutPriority(1)
             Spacer(minLength: 12)
-            if let note = row.note { StateChipView(chip: StateChip(text: note, warning: false)) }
-            if showsReason, let reason = row.disabledReason {
-                Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            if let note = row.note { StateChipView(chip: StateChip(text: note, tone: .neutral)) }
+            // Said in the row, not only in the help: a button that is off for no visible reason looks broken. Whole or
+            // not at all: in a narrow column `Non…` says nothing, and the help still has it.
+            if !row.isWorking, let reason = row.disabledReason {
+                ViewThatFits(in: .horizontal) {
+                    Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
+                }
             }
             SizeText(bytes: row.size)
             ActionButton(
@@ -294,8 +303,10 @@ private struct ActionButton: View {
         if isWorking {
             ProgressView().controlSize(.small).accessibilityLabel("\(label), under way")
         } else {
+            // A button is never cut: `Delete Un…` says nothing. The reason beside it gives way instead.
             let button = Button(title, action: action)
                 .controlSize(.small)
+                .fixedSize()
                 .disabled(!isEnabled)
                 .accessibilityLabel(label)
             // No tooltip at all rather than an empty one.
@@ -440,7 +451,7 @@ private struct DockerRowView: View {
             Text(row.title).frame(minWidth: 84, alignment: .leading)
             Text(row.detail).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 12)
-            if let note = row.note { StateChipView(chip: StateChip(text: note, warning: false)) }
+            if let note = row.note { StateChipView(chip: StateChip(text: note, tone: .neutral)) }
             // Said in the row, not only in the help: why an image a stopped container has is not unused is not obvious.
             if !row.isWorking, let reason = row.disabledReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

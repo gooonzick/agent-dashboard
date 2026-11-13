@@ -44,7 +44,6 @@ struct WorktreeInspector: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-            HStack(spacing: 4) { StateChips(row: row) }.padding(.top, 2)
         }
     }
 

@@ -2,36 +2,47 @@ import CoreModels
 import Dashboard
 import SwiftUI
 
-/// A State chip: warm for what stands in the way of removing, plain for what does not.
+/// A State chip: orange for what may be lost, grey for work that is here, plain text when all is well.
 struct StateChipView: View {
     let chip: StateChip
 
     var body: some View {
-        Text(chip.text)
-            .font(.caption)
-            .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .foregroundStyle(chip.warning ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-            .background(
-                chip.warning ? AnyShapeStyle(Color.orange.opacity(0.22)) : AnyShapeStyle(.quaternary), in: .capsule)
-    }
-}
-
-/// The chips of a row, side by side.
-struct StateChips: View {
-    let row: WorktreeRow
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(Array(RowPresenter.stateChips(row).enumerated()), id: \.offset) { _, chip in
-                StateChipView(chip: chip)
-            }
+        switch chip.tone {
+        case .quiet:
+            Text(chip.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        case .neutral, .warning:
+            Text(chip.text)
+                .font(.caption)
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .foregroundStyle(chip.tone == .warning ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(
+                    chip.tone == .warning ? AnyShapeStyle(Color.orange.opacity(0.22)) : AnyShapeStyle(.quaternary),
+                    in: .capsule)
         }
     }
 }
 
-/// The MR / PR cell: the state with its symbol, or `—`.
+/// The State cell: the first chip, a warning first, and `+2` for the others, which the help names.
+struct StateChips: View {
+    let row: WorktreeRow
+
+    var body: some View {
+        let summary = RowPresenter.stateSummary(row)
+        HStack(spacing: 4) {
+            StateChipView(chip: summary.chip)
+            if summary.more > 0 {
+                Text("+\(summary.more)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+        }
+        .help(summary.more > 0 ? summary.help : "")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(summary.help)
+    }
+}
+
+/// The MR / PR cell: the state with its symbol, or nothing.
 struct ReviewChip: View {
     let review: ReviewInfo
 
@@ -42,9 +53,8 @@ struct ReviewChip: View {
                 .font(.callout)
                 .foregroundStyle(symbol.tint)
                 .lineLimit(1)
-        } else {
-            Text(text).foregroundStyle(.secondary)
         }
+        // No review: the cell is empty rather than a dash on nearly every row.
     }
 
     private var symbol: (name: String, tint: Color)? {
@@ -58,7 +68,7 @@ struct ReviewChip: View {
     }
 }
 
-/// The Running cell: what runs, with the memory, or `—`.
+/// The Running cell: what runs, with the memory, or nothing.
 struct RunningCell: View {
     let groups: [ProcessGroup]
 
@@ -69,9 +79,8 @@ struct RunningCell: View {
                 .font(.callout)
                 .lineLimit(1)
                 .truncationMode(.tail)
-        } else {
-            Text("—").foregroundStyle(.secondary)
         }
+        // Nothing runs: the cell is empty rather than a dash on nearly every row.
     }
 }
 

@@ -19,18 +19,19 @@ struct ProjectsTable: View {
 
     var body: some View {
         Table(of: TableNode.self, selection: $selection) {
+            // The name is what a row is read by: it takes the room the narrow columns leave (their `max`).
             TableColumn("Name") { node in NameCell(row: node.row) }
-                .width(min: 180, ideal: 230)
+                .width(min: 200, ideal: 280)
             TableColumn("MR / PR") { node in ReviewChip(review: node.row.review) }
-                .width(min: 80, ideal: 85)
+                .width(min: 70, ideal: 85, max: 110)
             TableColumn("State") { node in StateChips(row: node.row) }
-                .width(min: 120, ideal: 200)
+                .width(min: 110, ideal: 150, max: 200)
             TableColumn("Running") { node in RunningCell(groups: node.row.groups) }
-                .width(min: 120, ideal: 200)
+                .width(min: 120, ideal: 180)
             TableColumn("Real size") { node in
                 Text(node.row.size.realSizeText).monospacedDigit().frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .width(min: 70, ideal: 80)
+            .width(min: 70, ideal: 80, max: 100)
             .alignment(.trailing)
         } rows: {
             ForEach(projects) { project in

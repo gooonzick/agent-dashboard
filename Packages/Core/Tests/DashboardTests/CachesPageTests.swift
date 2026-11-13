@@ -216,7 +216,7 @@ private func group(_ pid: Int32, name: String, cwd: String, executable: String? 
         #expect(page.xcode.map(\.id) == ["derived-data", "simulators"])
         #expect(page.xcode[0].isWorking)
         #expect(!page.xcode[1].isWorking)
-        #expect(page.xcode[1].disabledReason == "No unavailable simulators")
+        #expect(page.xcode[1].disabledReason == "None unavailable")
     }
 
     @Test func dockerLines() {

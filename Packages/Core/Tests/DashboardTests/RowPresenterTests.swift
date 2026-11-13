@@ -17,10 +17,36 @@ import Testing
     @Test func stateChipsFromReasons() {
         #expect(
             RowPresenter.stateChips(row(.blocked([.modified(11), .stash(1)])))
-                == [StateChip(text: "11 changes", warning: true), StateChip(text: "stash", warning: true)])
-        #expect(RowPresenter.stateChips(row(.ready(needsStopping: false))) == [StateChip(text: "Clean", warning: false)])
-        #expect(RowPresenter.stateChips(row(.missing)) == [StateChip(text: "Missing", warning: true)])
-        #expect(RowPresenter.stateChips(row(.blocked([.cantVerify]))) == [StateChip(text: "Can't verify", warning: true)])
+                == [StateChip(text: "11 changes", tone: .neutral), StateChip(text: "stash", tone: .neutral)])
+        #expect(RowPresenter.stateChips(row(.ready(needsStopping: false))) == [StateChip(text: "Clean", tone: .quiet)])
+        #expect(RowPresenter.stateChips(row(.missing)) == [StateChip(text: "Missing", tone: .warning)])
+        #expect(RowPresenter.stateChips(row(.blocked([.cantVerify]))) == [StateChip(text: "Can't verify", tone: .warning)])
+    }
+
+    /// Work that is only here is a neutral chip; what may be lost or cannot be known is a warning.
+    @Test func onlyWhatMayBeLostIsAWarning() {
+        let reasons: [UnsavedReason] = [
+            .modified(2), .untracked(3), .stash(4), .unpushed(5), .notOnRemote(6), .lockedManually, .statusUnavailable,
+        ]
+        #expect(
+            RowPresenter.stateChips(row(.blocked(reasons))).map(\.tone) == [
+                .warning, .warning, .warning, .neutral, .neutral, .neutral, .neutral,
+            ])
+        #expect(
+            RowPresenter.stateChips(row(.blocked(reasons))).prefix(3).map(\.text)
+                == ["5 unpushed", "Not on remote", "Can't verify"])
+    }
+
+    /// The table shows the first chip, a warning first, and how many more; the help says them all.
+    @Test func theTableShowsOneChipAndHowManyMore() {
+        let summary = RowPresenter.stateSummary(row(.blocked([.modified(11), .untracked(2), .notOnRemote(1)])))
+        #expect(summary.chip == StateChip(text: "Not on remote", tone: .warning))
+        #expect(summary.more == 2)
+        #expect(summary.help == "Not on remote, 11 changes, 2 untracked")
+
+        let clean = RowPresenter.stateSummary(row(.ready(needsStopping: false)))
+        #expect(clean.chip == StateChip(text: "Clean", tone: .quiet))
+        #expect(clean.more == 0)
     }
 
     @Test func everyReasonHasItsOwnWording() {
@@ -28,7 +54,7 @@ import Testing
             .modified(2), .untracked(3), .stash(4), .unpushed(5), .notOnRemote(6), .lockedManually, .statusUnavailable,
         ]
         #expect(
-            RowPresenter.stateChips(row(.blocked(reasons))).map(\.text) == [
+            Set(RowPresenter.stateChips(row(.blocked(reasons))).map(\.text)) == [
                 "2 changes", "3 untracked", "4 stashes", "5 unpushed", "Not on remote", "Locked", "Can't verify",
             ])
     }
@@ -36,7 +62,7 @@ import Testing
     @Test func countsAreSingularAtOne() {
         #expect(
             RowPresenter.stateChips(row(.blocked([.modified(1), .untracked(1), .stash(1), .unpushed(1)]))).map(\.text)
-                == ["1 change", "1 untracked", "stash", "1 unpushed"])
+                == ["1 unpushed", "1 change", "1 untracked", "stash"])
         #expect(
             RowPresenter.stateChips(row(.blocked([.modified(2), .stash(2)]))).map(\.text) == ["2 changes", "2 stashes"])
         #expect(RowPresenter.stateChips(row(.mainWorktree, status: WorktreeStatus(modified: 1))).map(\.text) == ["1 change"])
@@ -188,7 +214,7 @@ import Testing
             let page = ReadyListing(all, expanded: expanded, capped: false)
             #expect(page.shown.map(\.id) == all.map(\.id))
             #expect(page.toggleTitle == nil)
-            #expect(page.removeTitle == "Remove 12…")
+            #expect(page.removeTitle == "Remove 12 worktrees…")
         }
         #expect(ReadyListing(all, expanded: false).shown.count == 4)
     }
@@ -197,8 +223,9 @@ import Testing
         let all = rows(12)
         let listing = ReadyListing(all, expanded: false)
         #expect(listing.total == 12)
-        #expect(listing.removeTitle == "Remove 12…")
+        #expect(listing.removeTitle == "Remove 12 worktrees…")
         #expect(listing.all.map(\.id) == all.map(\.id))
+        #expect(ReadyListing(rows(1), expanded: false).removeTitle == "Remove 1 worktree…")
     }
 }
 

@@ -160,7 +160,7 @@ public struct CleanupRow: Identifiable, Equatable, Sendable {
         action = entry.action
         isEnabled = entry.clean != nil
         disabledReason =
-            entry.clean != nil ? nil : entry.id == "simulators" ? "No unavailable simulators" : "Nothing to delete"
+            entry.clean != nil ? nil : entry.id == "simulators" ? "None unavailable" : "Nothing to delete"
         isWorking = state.working.contains(entry.id)
     }
 }

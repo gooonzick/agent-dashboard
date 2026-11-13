@@ -126,7 +126,7 @@ private struct ProcessesTable: View {
             }
             .width(min: 60, ideal: 70)
             .alignment(.trailing)
-            TableColumn("") { node in StopCell(node: node, actions: actions) }
+            TableColumn("") { node in StopCell(node: node, isSelected: node.id == selected, actions: actions) }
                 .width(20)
         } rows: {
             ForEach(page.sections) { section in
@@ -235,10 +235,13 @@ private struct UptimeCell: View {
 }
 
 /// The Stop of a line, or of the whole worktree on the head of its section; a spinner in its place while all that it
-/// would stop is being stopped. The same dialog and the same rules as in the inspector.
+/// would stop is being stopped. The same dialog and the same rules as in the inspector. Faint until the pointer is on it
+/// or its line is selected: the same symbol on every line would otherwise be the loudest column of the page.
 private struct StopCell: View {
     let node: ProcessNode
+    let isSelected: Bool
     let actions: RowActions
+    @State private var isHovered = false
 
     var body: some View {
         let row = node.section.row
@@ -253,11 +256,13 @@ private struct StopCell: View {
                 Button("Stop", systemImage: "stop.circle") { actions.stop(groups, row) }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
+                    .opacity(isHovered || isSelected ? 1 : 0.35)
                     .help(label)
                     .accessibilityLabel(label)
                     .disabled(!groups.contains { actions.canStop($0, of: row) })
             }
         }
         .frame(width: 16, height: 16)
+        .onHover { isHovered = $0 }
     }
 }
