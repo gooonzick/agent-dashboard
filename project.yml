@@ -19,6 +19,12 @@ settings:
     Debug:
       CODE_SIGN_IDENTITY: "-"
       CODE_SIGN_STYLE: Manual
+    Release:
+      # Ad-hoc signed and not notarized: with Hardened Runtime on, library validation
+      # would refuse to load Sparkle.framework, which has a different signature.
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+      ENABLE_HARDENED_RUNTIME: NO
 
 packages:
   Core:
@@ -28,6 +34,10 @@ targets:
   AgentDashboard:
     type: application
     platform: macOS
+    # The version lives in one file so Scripts/bump-version.sh can rewrite it.
+    configFiles:
+      Debug: Config/Version.xcconfig
+      Release: Config/Version.xcconfig
     sources:
       - path: App
     dependencies:
