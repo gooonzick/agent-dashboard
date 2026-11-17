@@ -5,6 +5,7 @@ import SwiftUI
 @main
 struct AgentDashboardApp: App {
     @State private var store = DashboardStore(env: .live(settings: SettingsStore(defaults: .standard)))
+    @StateObject private var updater = Updater()
 
     var body: some Scene {
         // One window: there is one store, and a second window would only show the same thing.
@@ -14,6 +15,9 @@ struct AgentDashboardApp: App {
         }
         .defaultSize(width: 1440, height: 900)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updater)
+            }
             AppCommands()
             InspectorCommands()
         }
@@ -21,7 +25,7 @@ struct AgentDashboardApp: App {
         // The accounts use the detector and the review service of the store, and the Keychain entries that its
         // requests read (`KeychainTokenStore` has the one service of the app).
         Settings {
-            SettingsView(store: store)
+            SettingsView(store: store, automaticUpdateChecks: $updater.automaticallyChecksForUpdates)
         }
     }
 }

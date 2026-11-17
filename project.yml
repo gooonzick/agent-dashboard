@@ -29,6 +29,9 @@ settings:
 packages:
   Core:
     path: Packages/Core
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 
 targets:
   AgentDashboard:
@@ -43,6 +46,20 @@ targets:
     dependencies:
       - package: Core
         product: AppShell
+      # Sparkle stays in the app target: the Core package does not know about it.
+      - package: Sparkle
+    # Merged with the keys Xcode generates (GENERATE_INFOPLIST_FILE). The Sparkle keys are custom, which
+    # INFOPLIST_KEY_* cannot set. The versions are spelled out because XcodeGen would otherwise write 1.0 and 1.
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SUFeedURL: https://github.com/gooonzick/agent-dashboard/releases/latest/download/appcast.xml
+        # Replaced by the public half of the key that Sparkle's generate_keys makes; Scripts/release.sh refuses
+        # to run while it is the placeholder.
+        SUPublicEDKey: REPLACE_WITH_PUBLIC_ED_KEY
+        SUEnableAutomaticChecks: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gooonzick.AgentDashboard
