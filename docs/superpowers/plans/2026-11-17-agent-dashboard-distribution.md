@@ -39,7 +39,7 @@
 
 ## Review Focus
 
-1. **Sparkle не загрузился** в ad-hoc сборке (library validation). Проверка: `codesign -d --entitlements -` и `codesign --verify --deep --strict` в `release.sh`, плюс запуск собранного DMG пользователем в Task 5.
+1. **Sparkle не загрузился** в ad-hoc сборке (library validation). Проверка: проверка в `release.sh`, что в `codesign -dv` нет `runtime` в `flags=`, и `codesign --verify --deep --strict` в `release.sh`, плюс запуск собранного DMG пользователем в Task 5.
 2. **Обновление заменяет приложение, а токены в Keychain остаются.** Bundle id не меняется. Keychain после ad-hoc обновления спросит доступ снова: это известное ограничение, оно записано в README.
 3. **Версия в теге не совпадает с `MARKETING_VERSION`,** или `CURRENT_PROJECT_VERSION` не растёт. `release.sh` падает, как в minuta. Тест в Task 1: `bump-version.sh` поднимает build.
 4. **Первое открытие скачанного DMG.** Gatekeeper блокирует неподписанное приложение. README говорит, как открыть: System Settings → Privacy & Security → «Open Anyway».

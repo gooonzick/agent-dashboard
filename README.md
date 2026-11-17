@@ -10,11 +10,13 @@ The app is signed ad hoc (no Developer ID, no notarization) and updates itself t
 
 1. Bump the version: `Scripts/bump-version.sh 0.2.0`. It writes `MARKETING_VERSION` and raises `CURRENT_PROJECT_VERSION` by one in `Config/Version.xcconfig`.
 2. Commit it: `git commit -am "build: version 0.2.0"`.
-3. Tag it: `git tag v0.2.0`. The tag must be `v` plus `MARKETING_VERSION`.
+3. Tag it: `git tag -a v0.2.0 -m "Agent Dashboard 0.2.0"`. The tag must be `v` plus `MARKETING_VERSION`.
 4. Build: `Scripts/release.sh`. It archives the Release app, signs it, packs `dist/Agent-Dashboard-<version>.dmg` and writes `dist/appcast.xml`.
-5. Publish: `git push --follow-tags`, then `gh release create v0.2.0 dist/Agent-Dashboard-0.2.0.dmg dist/appcast.xml --title v0.2.0`.
+5. Publish: `git push origin main v0.2.0`, then `gh release create v0.2.0 dist/Agent-Dashboard-0.2.0.dmg dist/appcast.xml --title v0.2.0`. The release must not be a draft or a prerelease, or `releases/latest` will not serve the appcast.
 
 `release.sh` refuses to continue when `SUPublicEDKey` is missing from the app or is still `REPLACE_WITH_PUBLIC_ED_KEY`, and when `GITHUB_REF_NAME` is a tag that differs from `v<MARKETING_VERSION>`.
+
+After pasting a new `SUPublicEDKey` into `project.yml`, run `xcodegen generate` and commit `project.yml` and `App/Info.plist` together.
 
 Optional environment:
 
