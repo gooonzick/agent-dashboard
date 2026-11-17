@@ -1,9 +1,11 @@
 # needs secrets.SPARKLE_PRIVATE_KEY and a runner with Xcode 27; until then releases are built with Scripts/release.sh
+# and this workflow runs only by hand. Once SPARKLE_PRIVATE_KEY is set and releases are no longer made locally,
+# re-enable the tag trigger by adding under `on:`
+#   push:
+#     tags: ["v*"]
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -24,13 +26,18 @@ jobs:
       - name: Install tools
         run: |
           brew install xcodegen create-dmg
-          curl -L -o /tmp/sparkle.tar.xz https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz
+          curl -fsSL -o /tmp/sparkle.tar.xz https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz
           mkdir -p "$HOME/bin/sparkle" && tar -xJf /tmp/sparkle.tar.xz -C "$HOME/bin/sparkle"
 
       - name: Write Sparkle key
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::error::SPARKLE_PRIVATE_KEY secret is missing"
+            exit 1
+          fi
+          umask 077
           printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_private_key"
           echo "SPARKLE_PRIVATE_KEY_FILE=$RUNNER_TEMP/sparkle_private_key" >> "$GITHUB_ENV"
           echo "SPARKLE_BIN=$HOME/bin/sparkle/bin" >> "$GITHUB_ENV"
