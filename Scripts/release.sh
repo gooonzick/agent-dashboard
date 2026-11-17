@@ -60,6 +60,12 @@ if [[ "$PUBLIC_KEY" == "REPLACE_WITH_PUBLIC_ED_KEY" ]]; then
   echo "Run Sparkle's generate_keys and put the public key into project.yml (see README, Release)." >&2
   exit 1
 fi
+# generate_appcast skips signing without a word when the key is not valid base64, and the 0.1.0 key is permanent.
+if [[ "$(printf '%s' "$PUBLIC_KEY" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" != "32" ]]; then
+  echo "error: SUPublicEDKey is not base64 for exactly 32 bytes (an Ed25519 public key)." >&2
+  echo "Paste the public key printed by generate_keys into project.yml (see README, Release)." >&2
+  exit 1
+fi
 
 if [[ -z "${SPARKLE_BIN:-}" ]]; then
   if [[ -x "$DERIVED/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast" ]]; then
@@ -73,6 +79,11 @@ fi
 echo "==> Signing"
 codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
+# The runtime flag would make library validation refuse Sparkle.framework; fail before shipping such a build.
+if codesign -dv "$APP" 2>&1 | grep -E '^CodeDirectory .*flags=' | grep -q 'runtime'; then
+  echo "error: the signed app has the Hardened Runtime flag; Sparkle.framework would not load (see project.yml)." >&2
+  exit 1
+fi
 
 echo "==> Building DMG"
 STAGE=$(mktemp -d)
@@ -91,7 +102,8 @@ fi
 echo "==> Generating appcast"
 APPCAST_DIR="$DIST/appcast"
 URL_PREFIX="https://github.com/gooonzick/agent-dashboard/releases/download/v$MARKETING/"
-mkdir -p "$APPCAST_DIR" && cp "$DMG" "$APPCAST_DIR/"
+mkdir -p "$APPCAST_DIR"
+cp "$DMG" "$APPCAST_DIR/"
 if [[ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
   "$SPARKLE_BIN/generate_appcast" --ed-key-file "$SPARKLE_PRIVATE_KEY_FILE" \
     --download-url-prefix "$URL_PREFIX" "$APPCAST_DIR"
@@ -99,5 +111,14 @@ else
   "$SPARKLE_BIN/generate_appcast" --download-url-prefix "$URL_PREFIX" "$APPCAST_DIR"
 fi
 cp "$APPCAST_DIR/appcast.xml" "$DIST/appcast.xml"
+# generate_appcast exits 0 without a signature when the key is unusable or differs from the keychain's.
+if ! grep -q 'sparkle:edSignature=' "$DIST/appcast.xml"; then
+  echo "error: $DIST/appcast.xml has no sparkle:edSignature; the private key does not match SUPublicEDKey or is missing." >&2
+  exit 1
+fi
+if ! grep -qF "url=\"${URL_PREFIX}Agent-Dashboard-${MARKETING}.dmg\"" "$DIST/appcast.xml"; then
+  echo "error: $DIST/appcast.xml does not point at ${URL_PREFIX}Agent-Dashboard-${MARKETING}.dmg" >&2
+  exit 1
+fi
 
 echo "==> Done: $DMG and $DIST/appcast.xml"
