@@ -36,11 +36,15 @@ echo "==> Generating project"
 xcodegen generate
 
 echo "==> Archiving $APP_NAME $MARKETING ($BUILD)"
+# With -quiet, xcodebuild heads the warnings of a compile step that succeeded with "error: the following command
+# failed with exit code 0 ..." and the name of the step. Those two lines go; the warnings themselves, and every real
+# error (whose exit code is not 0), stay. pipefail keeps the exit status of xcodebuild.
 xcodebuild archive \
   -project AgentDashboard.xcodeproj -scheme AgentDashboard -configuration Release \
   -destination 'generic/platform=macOS' \
   -archivePath "$ARCHIVE" -derivedDataPath "$DERIVED" \
-  -skipPackagePluginValidation -quiet
+  -skipPackagePluginValidation -quiet \
+  | awk '/^error: the following command failed with exit code 0 but produced no further output$/ { getline; next } { print }'
 
 APP="$ARCHIVE/Products/Applications/$APP_NAME.app"
 

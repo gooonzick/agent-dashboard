@@ -24,8 +24,20 @@ final class Updater: ObservableObject {
     }
 
     init() {
-        controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        // Sparkle refuses to start with a key it cannot decode and says so in an alert on every launch. Until the
+        // project has its real key, the updater is left off: no alert, and Check for Updates… stays disabled, as
+        // `canCheckForUpdates` turns true only once the updater has started.
+        let startsUpdater = Self.hasRealKey(Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey"))
+        controller = SPUStandardUpdaterController(
+            startingUpdater: startsUpdater, updaterDelegate: nil, userDriverDelegate: nil)
         controller.updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheckForUpdates)
+    }
+
+    /// Whether the `SUPublicEDKey` of the Info.plist is a key: present, and not the placeholder that project.yml has
+    /// until Sparkle's generate_keys is run.
+    nonisolated static func hasRealKey(_ value: Any?) -> Bool {
+        guard let key = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return !key.isEmpty && key != "REPLACE_WITH_PUBLIC_ED_KEY"
     }
 
     func checkForUpdates() {
