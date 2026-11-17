@@ -26,7 +26,7 @@ If `create-dmg` is installed the DMG gets its window layout; otherwise `hdiutil`
 
 ### First install
 
-The app is not notarized, so Gatekeeper blocks the first launch. Drag it to Applications, then either right-click the app, choose Open and confirm, or run `xattr -dr com.apple.quarantine "/Applications/Agent Dashboard.app"`. Later updates arrive through Sparkle and are not blocked.
+The app is not notarized, so Gatekeeper blocks the first launch. Drag it to Applications and open it once; macOS refuses. Then open System Settings > Privacy & Security, scroll to the Security section and click "Open Anyway" (it appears only after that first blocked launch), and confirm. Alternatively run `xattr -dr com.apple.quarantine "/Applications/Agent Dashboard.app"` before the first launch. The right-click Open route no longer works since macOS 15. Later updates arrive through Sparkle and are not blocked.
 
 ### Keychain after an update
 

@@ -29,7 +29,8 @@ DERIVED="$DIST/DerivedData"
 DMG="$DIST/Agent-Dashboard-$MARKETING.dmg"
 SIGN_IDENTITY="${AD_SIGN_IDENTITY:--}"
 
-rm -rf "$DIST" && mkdir -p "$DIST"
+rm -rf "$DIST"
+mkdir -p "$DIST"
 
 echo "==> Generating project"
 xcodegen generate
