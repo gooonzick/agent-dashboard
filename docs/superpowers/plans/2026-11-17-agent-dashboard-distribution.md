@@ -141,3 +141,18 @@
   - В установленной 0.1.0 «Check for Updates…» предлагает 0.1.1, ставит её и перезапускает приложение.
   - About показывает 0.1.1.
 - [ ] **Step 6:** Записать результаты в раздел «Результат проверки» этого плана, коммит `docs: record verification results for part 4`.
+
+## Результат проверки
+
+Проверено на этом маке 2026-11-18, подпись ad-hoc, без Developer ID и нотаризации (решение пользователя).
+
+- **Ключ Sparkle** создан через `generate_keys` (Sparkle 2.10.1). Приватный ключ лежит в login keychain, публичный — в `project.yml` и `App/Info.plist` (`34db58b`).
+- **Репозиторий** `gooonzick/agent-dashboard` публичный. Перед первым push автор всех 102 коммитов заменён на George Tsamaladze `<tsamaladze@gmail.com>`.
+- **Релиз v0.1.0** (`34db58b`): `Scripts/release.sh` собрал DMG на 3.4 MB и подписанный appcast со ссылкой `…/releases/download/v0.1.0/Agent-Dashboard-0.1.0.dmg`. `releases/latest/download/appcast.xml` и DMG отдаются с кодом 200.
+- **Установка из DMG:** Gatekeeper показал «"Agent Dashboard" Not Opened», это ожидаемо без нотаризации. Пользователь снял карантин через `xattr -dr com.apple.quarantine`. Приложение запустилось, «Check for Updates…» работает.
+- **Обновление:** релиз v0.1.1 (build 2, `a43c6f9`). Установленная 0.1.0 нашла его через «Check for Updates…», поставила и перезапустилась. В `/Applications` теперь 0.1.1 (2), без карантина.
+- **Тесты** проходят (883).
+
+**Не проверено**
+- Сборка релиза в GitHub Actions: workflow пока запускается только вручную, секрета `SPARKLE_PRIVATE_KEY` в репозитории нет, раннер с Xcode 27 не проверен.
+- Обновление на чужом маке, где первый запуск разрешают через «Open Anyway».
