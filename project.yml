@@ -58,7 +58,7 @@ targets:
         SUFeedURL: https://github.com/gooonzick/agent-dashboard/releases/latest/download/appcast.xml
         # Replaced by the public half of the key that Sparkle's generate_keys makes; Scripts/release.sh refuses
         # to run while it is the placeholder.
-        SUPublicEDKey: REPLACE_WITH_PUBLIC_ED_KEY
+        SUPublicEDKey: JBt5qqLJfEaJx0euwWvtrxCzAJh3EJtLmZbyo8MZ/bs=
         SUEnableAutomaticChecks: true
     settings:
       base:
